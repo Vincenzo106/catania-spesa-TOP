@@ -1,0 +1,178 @@
+[
+  {
+    "store": "Coop",
+    "category": "Pantry",
+    "product_name": "Pasta Barilla 500g",
+    "brand": "Barilla",
+    "original_price": 1.89,
+    "discounted_price": 0.99,
+    "discount_percentage": 47.62,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Coop",
+    "category": "Dairy",
+    "product_name": "Latte UHT 1L",
+    "brand": "Parmalat",
+    "original_price": 1.79,
+    "discounted_price": 1.19,
+    "discount_percentage": 33.52,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Conad",
+    "category": "Produce",
+    "product_name": "Banane al kg",
+    "brand": "Chiquita",
+    "original_price": 2.29,
+    "discounted_price": 1.49,
+    "discount_percentage": 34.93,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Conad",
+    "category": "Household",
+    "product_name": "Carta Igienica 12 rotoli",
+    "brand": "Conad",
+    "original_price": 6.99,
+    "discounted_price": 4.99,
+    "discount_percentage": 28.61,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Decò",
+    "category": "Pantry",
+    "product_name": "Olio EVO 1L",
+    "brand": "Monini",
+    "original_price": 8.49,
+    "discounted_price": 6.29,
+    "discount_percentage": 25.91,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Decò",
+    "category": "Dairy",
+    "product_name": "Mozzarella 125g",
+    "brand": "Santa Lucia",
+    "original_price": 1.39,
+    "discounted_price": 0.89,
+    "discount_percentage": 35.97,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Famila",
+    "category": "Pantry",
+    "product_name": "Passata di Pomodoro 700g",
+    "brand": "Valfrutta",
+    "original_price": 2.19,
+    "discounted_price": 1.19,
+    "discount_percentage": 45.66,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Famila",
+    "category": "Drinks",
+    "product_name": "Succo Multivitaminico 1L",
+    "brand": "Yoga",
+    "original_price": 2.59,
+    "discounted_price": 1.59,
+    "discount_percentage": 38.61,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "MD",
+    "category": "Meat & Fish",
+    "product_name": "Petto di Pollo al kg",
+    "brand": null,
+    "original_price": 10.9,
+    "discounted_price": 7.9,
+    "discount_percentage": 27.52,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "MD",
+    "category": "Produce",
+    "product_name": "Pomodori Ciliegino 500g",
+    "brand": null,
+    "original_price": 2.79,
+    "discounted_price": 1.69,
+    "discount_percentage": 39.43,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Eurospin",
+    "category": "Pantry",
+    "product_name": "Tonno 3x80g",
+    "brand": "Ondina",
+    "original_price": 4.29,
+    "discounted_price": 2.99,
+    "discount_percentage": 30.3,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Eurospin",
+    "category": "Drinks",
+    "product_name": "Acqua Lete 6x1.5L",
+    "brand": "Lete",
+    "original_price": 2.49,
+    "discounted_price": 1.59,
+    "discount_percentage": 36.14,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Lidl",
+    "category": "Frozen",
+    "product_name": "Gelato 500g",
+    "brand": "Gelatelli",
+    "original_price": 3.99,
+    "discounted_price": 2.49,
+    "discount_percentage": 37.59,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Lidl",
+    "category": "Household",
+    "product_name": "Detersivo 2L",
+    "brand": "W5",
+    "original_price": 5.49,
+    "discounted_price": 3.49,
+    "discount_percentage": 36.43,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Spaccio Alimentare",
+    "category": "Produce",
+    "product_name": "Arance Tarocco al kg",
+    "brand": null,
+    "original_price": 2.99,
+    "discounted_price": 1.99,
+    "discount_percentage": 33.44,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Spaccio Alimentare",
+    "category": "Pantry",
+    "product_name": "Biscotti 700g",
+    "brand": "Colussi",
+    "original_price": 4.49,
+    "discounted_price": 2.99,
+    "discount_percentage": 33.41,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  }
+]
