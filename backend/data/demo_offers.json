@@ -35,7 +35,7 @@
   {
     "store": "Conad",
     "category": "Household",
-    "product_name": "Carta Igienica 12 rotoli",
+    "product_name": "Carta igienica 12 rotoli",
     "brand": "Conad",
     "original_price": 6.99,
     "discounted_price": 4.99,
@@ -68,7 +68,7 @@
   {
     "store": "Famila",
     "category": "Pantry",
-    "product_name": "Passata di Pomodoro 700g",
+    "product_name": "Passata di pomodoro 700g",
     "brand": "Valfrutta",
     "original_price": 2.19,
     "discounted_price": 1.19,
@@ -79,7 +79,7 @@
   {
     "store": "Famila",
     "category": "Drinks",
-    "product_name": "Succo Multivitaminico 1L",
+    "product_name": "Succo multivitaminico 1L",
     "brand": "Yoga",
     "original_price": 2.59,
     "discounted_price": 1.59,
@@ -90,7 +90,7 @@
   {
     "store": "MD",
     "category": "Meat & Fish",
-    "product_name": "Petto di Pollo al kg",
+    "product_name": "Petto di pollo al kg",
     "brand": null,
     "original_price": 10.9,
     "discounted_price": 7.9,
@@ -101,7 +101,7 @@
   {
     "store": "MD",
     "category": "Produce",
-    "product_name": "Pomodori Ciliegino 500g",
+    "product_name": "Pomodorini ciliegino 500g",
     "brand": null,
     "original_price": 2.79,
     "discounted_price": 1.69,
@@ -156,7 +156,7 @@
   {
     "store": "Spaccio Alimentare",
     "category": "Produce",
-    "product_name": "Arance Tarocco al kg",
+    "product_name": "Arance tarocco al kg",
     "brand": null,
     "original_price": 2.99,
     "discounted_price": 1.99,
@@ -172,6 +172,28 @@
     "original_price": 4.49,
     "discounted_price": 2.99,
     "discount_percentage": 33.41,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Crai",
+    "category": "Pantry",
+    "product_name": "Riso Ribe 1kg",
+    "brand": "Scotti",
+    "original_price": 3.29,
+    "discounted_price": 2.19,
+    "discount_percentage": 33.43,
+    "flyer_valid_until": "2026-06-25",
+    "source_filename": "demo-seed.json"
+  },
+  {
+    "store": "Crai",
+    "category": "Drinks",
+    "product_name": "Tè freddo pesca 1.5L",
+    "brand": "Estathé",
+    "original_price": 2.49,
+    "discounted_price": 1.69,
+    "discount_percentage": 32.13,
     "flyer_valid_until": "2026-06-25",
     "source_filename": "demo-seed.json"
   }
