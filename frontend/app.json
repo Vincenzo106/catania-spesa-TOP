@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "Catania Spesa Top",
+    "slug": "catania-spesa-top",
+    "version": "1.0.0",
+    "icon": "./assets/icon.png",
+    "backgroundColor": "#F8F9FA",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "web": {
+      "bundler": "metro"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.cataniaspesatop.app",
+      "versionCode": 1,
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#F8F9FA"
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "4ac119d5-c431-48dd-b942-e14cf7cfb8f7"
+      }
+    }
+  }
+}
