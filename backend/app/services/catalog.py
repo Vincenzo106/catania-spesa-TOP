@@ -11,6 +11,7 @@ KNOWN_STORES = [
     "Eurospin",
     "Lidl",
     "Spaccio Alimentare",
+    "Crai",
 ]
 
 CATEGORY_KEYWORDS = {

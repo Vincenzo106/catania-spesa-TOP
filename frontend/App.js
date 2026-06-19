@@ -1,7 +1,6 @@
-import React, { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import React, { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Animated,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -14,9 +13,24 @@ import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const PRODUCTION_OFFERS_URL = "https://catania-spesa-top-backend.onrender.com/api/offers?limit=500";
+const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_BASE_URL || "https://catania-spesa-top.onrender.com";
+const OFFERS_URL = `${API_BASE_URL}/offers`;
+
 const STORE_FILTER_ALL = "Tutti i supermercati";
 const CATEGORY_FILTER_ALL = "Tutte le categorie";
+
+const STORE_ORDER = [
+  "Coop",
+  "Conad",
+  "Decò",
+  "Famila",
+  "MD",
+  "Eurospin",
+  "Lidl",
+  "Spaccio Alimentare",
+  "Crai",
+];
 
 const CATEGORY_LABELS = {
   [CATEGORY_FILTER_ALL]: "Tutte le categorie",
@@ -37,7 +51,7 @@ export default function App() {
   });
 
   const [allOffers, setAllOffers] = useState([]);
-  const [stores, setStores] = useState([STORE_FILTER_ALL]);
+  const [stores, setStores] = useState([STORE_FILTER_ALL, ...STORE_ORDER]);
   const [categories, setCategories] = useState([CATEGORY_FILTER_ALL]);
   const [selectedStore, setSelectedStore] = useState(STORE_FILTER_ALL);
   const [selectedCategory, setSelectedCategory] = useState(CATEGORY_FILTER_ALL);
@@ -45,26 +59,9 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState("");
+  const [errorInfo, setErrorInfo] = useState(null);
 
   const deferredSearch = useDeferredValue(search);
-  const heroOpacity = useRef(new Animated.Value(0)).current;
-  const heroTranslate = useRef(new Animated.Value(14)).current;
-
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(heroOpacity, {
-        duration: 420,
-        toValue: 1,
-        useNativeDriver: true,
-      }),
-      Animated.timing(heroTranslate, {
-        duration: 420,
-        toValue: 0,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [heroOpacity, heroTranslate]);
 
   useEffect(() => {
     loadOffers();
@@ -77,38 +74,52 @@ export default function App() {
       setLoading(true);
     }
 
-    setError("");
+    setErrorInfo(null);
 
     try {
-      const response = await fetch(PRODUCTION_OFFERS_URL, {
+      const response = await fetch(OFFERS_URL, {
         headers: {
           Accept: "application/json",
         },
       });
 
       if (!response.ok) {
-        throw new Error(`Server non disponibile (${response.status}).`);
+        let serverMessage = "Non riesco a raggiungere il server delle offerte.";
+
+        try {
+          const body = await response.json();
+          serverMessage = body.detail || body.message || serverMessage;
+        } catch {
+          // Manteniamo il messaggio di fallback quando il body non e JSON.
+        }
+
+        const httpError = new Error(serverMessage);
+        httpError.httpStatus = response.status;
+        httpError.requestUrl = OFFERS_URL;
+        throw httpError;
       }
 
       const payload = await response.json();
       const items = Array.isArray(payload.items) ? payload.items : [];
       const availableStores = Array.isArray(payload.available_stores)
         ? payload.available_stores
-        : [...new Set(items.map((offer) => offer.store))];
+        : [...new Set(items.map((offer) => offer.store).filter(Boolean))];
       const availableCategories = Array.isArray(payload.available_categories)
         ? payload.available_categories
-        : [...new Set(items.map((offer) => offer.category))];
+        : [...new Set(items.map((offer) => offer.category).filter(Boolean))];
 
       startTransition(() => {
         setAllOffers(items);
-        setStores([STORE_FILTER_ALL, ...availableStores]);
-        setCategories([CATEGORY_FILTER_ALL, ...availableCategories]);
+        setStores([STORE_FILTER_ALL, ...sortStores([...STORE_ORDER, ...availableStores])]);
+        setCategories([CATEGORY_FILTER_ALL, ...sortCategories(availableCategories)]);
       });
     } catch (loadError) {
-      setError(
-        loadError.message ||
-          "Impossibile caricare le offerte live. Controlla la connessione e riprova."
-      );
+      setErrorInfo({
+        message:
+          loadError.message || "Non riesco a raggiungere il server delle offerte.",
+        status: typeof loadError.httpStatus === "number" ? String(loadError.httpStatus) : "N/D",
+        url: loadError.requestUrl || OFFERS_URL,
+      });
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -155,8 +166,8 @@ export default function App() {
         ]
           .join(" ")
           .toLowerCase();
-        const matchesSearch = haystack.includes(normalizedSearch);
-        return matchesStore && matchesCategory && matchesSearch;
+
+        return matchesStore && matchesCategory && haystack.includes(normalizedSearch);
       })
       .sort((left, right) => {
         if ((right.discount_percentage || 0) !== (left.discount_percentage || 0)) {
@@ -166,13 +177,7 @@ export default function App() {
       });
   }, [allOffers, deferredSearch, selectedCategory, selectedStore]);
 
-  const bestDeals = useMemo(
-    () =>
-      [...visibleOffers]
-        .sort((left, right) => (right.discount_percentage || 0) - (left.discount_percentage || 0))
-        .slice(0, 6),
-    [visibleOffers]
-  );
+  const bestDeals = useMemo(() => visibleOffers.slice(0, 5), [visibleOffers]);
 
   const shoppingEntries = useMemo(
     () =>
@@ -181,6 +186,7 @@ export default function App() {
       ),
     [shoppingList]
   );
+
   const shoppingTotal = computeShoppingListTotal(shoppingEntries);
   const shoppingItemCount = countShoppingItems(shoppingEntries);
   const bestDiscount = bestDeals[0]?.discount_percentage || null;
@@ -198,116 +204,117 @@ export default function App() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => loadOffers(true)}
-            tintColor="#111827"
+            tintColor="#2563EB"
           />
         }
         showsVerticalScrollIndicator={false}
       >
-        <Animated.View
-          style={[
-            styles.heroCard,
-            {
-              opacity: heroOpacity,
-              transform: [{ translateY: heroTranslate }],
-            },
-          ]}
-        >
-          <View style={styles.heroHeaderRow}>
-            <View style={styles.heroBadge}>
-              <Text style={styles.heroBadgeText}>Dati live</Text>
-            </View>
-            <Text style={styles.heroSmallText}>Aggiornamento via internet</Text>
+        <View style={styles.headerBlock}>
+          <View style={styles.headerBadge}>
+            <Text style={styles.headerBadgeText}>Servizio online</Text>
           </View>
-          <Text style={styles.heroTitle}>
-            Confronta le offerte dei supermercati di Catania ovunque ti trovi
+          <Text style={styles.appTitle}>Catania Spesa Top</Text>
+          <Text style={styles.appSubtitle}>
+            Trova le offerte migliori nei supermercati di Catania.
           </Text>
-          <Text style={styles.heroSubtitle}>
-            L'app legge le offerte dal backend online e ti permette di filtrare, confrontare gli
-            sconti e comporre la tua lista della spesa anche sotto rete 4G o 5G.
+        </View>
+
+        <View style={styles.statsRow}>
+          <StatCard label="Offerte trovate" value={String(visibleOffers.length)} />
+          <StatCard
+            label="Miglior sconto"
+            value={bestDiscount ? formatPercentCompact(bestDiscount) : "N/D"}
+          />
+          <StatCard label="Totale lista" value={formatPrice(shoppingTotal)} />
+        </View>
+
+        <View style={styles.searchCard}>
+          <Text style={styles.sectionTitle}>Cerca prodotti</Text>
+          <Text style={styles.sectionSubtitle}>
+            Cerca per nome, marca o categoria per trovare rapidamente le promozioni utili.
           </Text>
-        </Animated.View>
+          <TextInput
+            onChangeText={setSearch}
+            placeholder="Cerca prodotti..."
+            placeholderTextColor="#9CA3AF"
+            style={styles.searchInput}
+            value={search}
+          />
+        </View>
+
+        <View style={styles.sectionCard}>
+          <SectionHeader
+            title="Supermercati"
+            subtitle="Seleziona un'insegna specifica oppure confronta tutte le offerte disponibili."
+          />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {stores.map((store) => (
+              <FilterChip
+                key={store}
+                active={store === selectedStore}
+                label={store}
+                onPress={() => {
+                  startTransition(() => setSelectedStore(store));
+                }}
+              />
+            ))}
+          </ScrollView>
+        </View>
+
+        <View style={styles.sectionCard}>
+          <SectionHeader
+            title="Categorie"
+            subtitle="Passa da alimentari, bevande e prodotti per la casa con un tocco."
+          />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {categories.map((category) => (
+              <FilterChip
+                key={category}
+                active={category === selectedCategory}
+                label={getCategoryLabel(category)}
+                onPress={() => {
+                  startTransition(() => setSelectedCategory(category));
+                }}
+              />
+            ))}
+          </ScrollView>
+        </View>
 
         {loading ? (
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color="#111827" />
-            <Text style={styles.loadingTitle}>Caricamento offerte live</Text>
-            <Text style={styles.loadingSubtitle}>
-              Stiamo recuperando i dati aggiornati dal backend in produzione.
+          <View style={styles.feedbackCard}>
+            <ActivityIndicator size="large" color="#2563EB" />
+            <Text style={styles.feedbackTitle}>Caricamento offerte in corso...</Text>
+            <Text style={styles.feedbackText}>Aggiorno le promozioni disponibili.</Text>
+            <Text style={styles.feedbackHint}>
+              Se è il primo avvio, attendi qualche secondo e riprova.
             </Text>
           </View>
         ) : null}
 
-        {!loading ? (
+        {!loading && errorInfo ? (
+          <View style={styles.feedbackCard}>
+            <Text style={styles.errorTitle}>Non riesco a raggiungere il server delle offerte</Text>
+            <Text style={styles.feedbackText}>{errorInfo.message}</Text>
+            <Text style={styles.feedbackHint}>
+              Se è il primo avvio, attendi qualche secondo e riprova.
+            </Text>
+            <View style={styles.debugBox}>
+              <Text style={styles.debugTitle}>Dettagli tecnici</Text>
+              <Text style={styles.debugText}>Server chiamato: {errorInfo.url}</Text>
+              <Text style={styles.debugText}>Stato HTTP: {errorInfo.status}</Text>
+            </View>
+            <Pressable onPress={() => loadOffers()} style={styles.primaryButton}>
+              <Text style={styles.primaryButtonText}>Riprova</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        {!loading && !errorInfo ? (
           <>
-            <View style={styles.statsRow}>
-              <StatCard label="Offerte visibili" value={String(visibleOffers.length)} />
-              <StatCard
-                label="Miglior sconto"
-                value={bestDiscount ? formatPercent(bestDiscount) : "N/D"}
-              />
-              <StatCard label="Totale carrello" value={formatPrice(shoppingTotal)} />
-            </View>
-
             <View style={styles.sectionCard}>
               <SectionHeader
-                title="Filtra per supermercato"
-                subtitle="Seleziona un'insegna specifica oppure confrontale tutte insieme."
-              />
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {stores.map((store) => (
-                  <FilterChip
-                    key={store}
-                    active={store === selectedStore}
-                    label={getStoreLabel(store)}
-                    onPress={() => {
-                      startTransition(() => {
-                        setSelectedStore(store);
-                        setSelectedCategory(CATEGORY_FILTER_ALL);
-                      });
-                    }}
-                  />
-                ))}
-              </ScrollView>
-            </View>
-
-            <View style={styles.sectionCard}>
-              <SectionHeader
-                title="Filtra per categoria"
-                subtitle="Passa rapidamente da frutta e verdura ai prodotti per la casa."
-              />
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {categories.map((category) => (
-                  <FilterChip
-                    key={category}
-                    active={category === selectedCategory}
-                    label={getCategoryLabel(category)}
-                    onPress={() => {
-                      startTransition(() => setSelectedCategory(category));
-                    }}
-                  />
-                ))}
-              </ScrollView>
-            </View>
-
-            <View style={styles.sectionCard}>
-              <SectionHeader
-                title="Cerca prodotti"
-                subtitle="Ricerca per nome, marca o categoria per trovare subito ciò che ti serve."
-              />
-              <TextInput
-                onChangeText={setSearch}
-                placeholder="Cerca prodotti, marche o categorie..."
-                placeholderTextColor="#98A2B3"
-                style={styles.searchInput}
-                value={search}
-              />
-              {error ? <Text style={styles.errorText}>{error}</Text> : null}
-            </View>
-
-            <View style={styles.sectionCard}>
-              <SectionHeader
-                title="Offerte top"
-                subtitle="Selezione ordinata in base alla percentuale di sconto più alta."
+                title="Migliori occasioni"
+                subtitle="Una selezione ordinata per sconto, utile per vedere subito le offerte più interessanti."
               />
               {bestDeals.length > 0 ? (
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -315,59 +322,43 @@ export default function App() {
                     <BestDealCard
                       key={`best-${offer.id}`}
                       offer={offer}
-                      formatPercent={formatPercent}
-                      formatPrice={formatPrice}
                       onAdd={() => updateQuantity(offer, 1)}
                     />
                   ))}
                 </ScrollView>
               ) : (
-                <Text style={styles.helperText}>
-                  Nessuna offerta top disponibile per i filtri selezionati.
-                </Text>
+                <EmptyState text="Nessuna offerta trovata con questi filtri." />
               )}
             </View>
 
             <View style={styles.sectionCard}>
               <SectionHeader
-                title="Catalogo offerte"
-                subtitle={`${visibleOffers.length} ${visibleOffers.length === 1 ? "articolo disponibile" : "articoli disponibili"} con i filtri attuali`}
+                title="Offerte disponibili"
+                subtitle={`${visibleOffers.length} ${visibleOffers.length === 1 ? "prodotto trovato" : "prodotti trovati"} con i filtri attuali`}
               />
-              {visibleOffers.map((offer) => (
-                <OfferCard
-                  key={offer.id}
-                  offer={offer}
-                  quantity={shoppingList[offer.id]?.quantity || 0}
-                  formatPercent={formatPercent}
-                  formatPrice={formatPrice}
-                  onAdd={() => updateQuantity(offer, 1)}
-                  onRemove={() => updateQuantity(offer, -1)}
-                />
-              ))}
               {visibleOffers.length === 0 ? (
-                <Text style={styles.helperText}>Nessun articolo trovato con i filtri attuali.</Text>
-              ) : null}
+                <EmptyState text="Nessuna offerta trovata con questi filtri." />
+              ) : (
+                visibleOffers.map((offer) => (
+                  <OfferCard
+                    key={offer.id}
+                    offer={offer}
+                    quantity={shoppingList[offer.id]?.quantity || 0}
+                    onAdd={() => updateQuantity(offer, 1)}
+                    onRemove={() => updateQuantity(offer, -1)}
+                  />
+                ))
+              )}
             </View>
 
             <ShoppingListPanel
               entries={shoppingEntries}
-              formatPrice={formatPrice}
               itemCount={shoppingItemCount}
               total={shoppingTotal}
               onAdd={(offer) => updateQuantity(offer, 1)}
               onRemove={(offer) => updateQuantity(offer, -1)}
             />
           </>
-        ) : null}
-
-        {!loading && error ? (
-          <View style={styles.errorCard}>
-            <Text style={styles.errorCardTitle}>Connessione al backend non riuscita</Text>
-            <Text style={styles.errorCardText}>{error}</Text>
-            <Pressable onPress={() => loadOffers()} style={styles.retryButton}>
-              <Text style={styles.retryButtonText}>Riprova</Text>
-            </Pressable>
-          </View>
         ) : null}
       </ScrollView>
     </SafeAreaView>
@@ -398,81 +389,74 @@ function FilterChip({ label, active, onPress }) {
       onPress={onPress}
       style={[styles.chip, active ? styles.chipActive : styles.chipIdle]}
     >
-      <Text style={[styles.chipLabel, active ? styles.chipLabelActive : styles.chipLabelIdle]}>
+      <Text style={[styles.chipText, active ? styles.chipTextActive : styles.chipTextIdle]}>
         {label}
       </Text>
     </Pressable>
   );
 }
 
-function BestDealCard({ offer, formatPercent, formatPrice, onAdd }) {
+function BestDealCard({ offer, onAdd }) {
   return (
-    <View style={styles.bestCard}>
-      <View style={styles.bestHeader}>
-        <View style={styles.storeBadge}>
-          <Text style={styles.storeBadgeText}>{offer.store}</Text>
-        </View>
-        <Text style={styles.discountText}>{formatPercent(offer.discount_percentage)}</Text>
+    <View style={styles.bestDealCard}>
+      <View style={styles.bestDealTop}>
+        <Text style={styles.storePill}>{offer.store}</Text>
+        <Text style={styles.discountPill}>{formatPercentCompact(offer.discount_percentage)}</Text>
       </View>
-      <Text style={styles.bestTitle}>{offer.product_name}</Text>
-      <Text style={styles.bestSubtitle}>{offer.brand || offer.categoryLabel || offer.category}</Text>
-      <View style={styles.bestFooter}>
+      <Text style={styles.offerName}>{offer.product_name}</Text>
+      <Text style={styles.offerMeta}>
+        {offer.brand || "Marca non specificata"} - {offer.categoryLabel}
+      </Text>
+      <View style={styles.priceRow}>
         <View>
           <Text style={styles.oldPrice}>{formatPrice(offer.original_price)}</Text>
           <Text style={styles.newPrice}>{formatPrice(offer.discounted_price)}</Text>
         </View>
-        <Pressable onPress={onAdd} style={styles.primaryMiniButton}>
-          <Text style={styles.primaryMiniButtonText}>Aggiungi</Text>
+        <Pressable onPress={onAdd} style={styles.miniActionButton}>
+          <Text style={styles.miniActionButtonText}>Aggiungi</Text>
         </Pressable>
       </View>
     </View>
   );
 }
 
-function OfferCard({ offer, quantity, formatPercent, formatPrice, onAdd, onRemove }) {
+function OfferCard({ offer, quantity, onAdd, onRemove }) {
   return (
     <View style={styles.offerCard}>
-      <View style={styles.offerTopRow}>
-        <View style={styles.storeBadge}>
-          <Text style={styles.storeBadgeText}>{offer.store}</Text>
-        </View>
-        <Text style={styles.discountText}>{formatPercent(offer.discount_percentage)}</Text>
+      <View style={styles.offerHeader}>
+        <Text style={styles.storePill}>{offer.store}</Text>
+        <Text style={styles.discountPill}>{formatPercentCompact(offer.discount_percentage)}</Text>
       </View>
-
-      <Text style={styles.offerTitle}>{offer.product_name}</Text>
-      <Text style={styles.offerSubtitle}>
-        {offer.brand || "Marca non specificata"} - {offer.categoryLabel || offer.category}
+      <Text style={styles.offerName}>{offer.product_name}</Text>
+      <Text style={styles.offerMeta}>
+        {offer.brand || "Marca non specificata"} - {offer.categoryLabel}
       </Text>
-
-      <View style={styles.offerMetaRow}>
+      <View style={styles.offerDetailsRow}>
         <View>
           <Text style={styles.oldPrice}>{formatPrice(offer.original_price)}</Text>
           <Text style={styles.newPrice}>{formatPrice(offer.discounted_price)}</Text>
         </View>
-        <View style={styles.validityBlock}>
+        <View style={styles.validityBox}>
           <Text style={styles.validityLabel}>Valida fino al</Text>
-          <Text style={styles.validityValue}>{offer.flyer_valid_until || "Non indicata"}</Text>
+          <Text style={styles.validityValue}>{formatDate(offer.flyer_valid_until)}</Text>
         </View>
       </View>
-
-      <View style={styles.offerActionsRow}>
-        <Pressable onPress={onAdd} style={styles.primaryButton}>
-          <Text style={styles.primaryButtonText}>
-            {quantity > 0 ? "Aggiungi ancora" : "Aggiungi"}
-          </Text>
+      <View style={styles.actionsRow}>
+        <Pressable onPress={onAdd} style={styles.primaryButtonInline}>
+          <Text style={styles.primaryButtonInlineText}>Aggiungi</Text>
         </Pressable>
         <Pressable
           disabled={quantity === 0}
           onPress={onRemove}
-          style={[styles.secondaryButton, quantity === 0 && styles.secondaryButtonDisabled]}
+          style={[styles.secondaryButtonInline, quantity === 0 && styles.buttonDisabled]}
         >
           <Text
             style={[
-              styles.secondaryButtonText,
-              quantity === 0 && styles.secondaryButtonTextDisabled,
+              styles.secondaryButtonInlineText,
+              quantity === 0 && styles.secondaryButtonInlineTextDisabled,
             ]}
           >
-            {quantity > 0 ? `Rimuovi (${quantity})` : "Non presente"}
+            {quantity > 0 ? `Rimuovi (${quantity})` : "Rimuovi"}
           </Text>
         </Pressable>
       </View>
@@ -480,26 +464,23 @@ function OfferCard({ offer, quantity, formatPercent, formatPrice, onAdd, onRemov
   );
 }
 
-function ShoppingListPanel({ entries, formatPrice, itemCount, total, onAdd, onRemove }) {
+function ShoppingListPanel({ entries, itemCount, total, onAdd, onRemove }) {
   return (
     <View style={styles.listCard}>
       <View style={styles.listHeader}>
         <View>
           <Text style={styles.listTitle}>Lista della spesa</Text>
-          <Text style={styles.listCount}>
-            {itemCount} {itemCount === 1 ? "articolo" : "articoli"}
+          <Text style={styles.listSubtitle}>
+            {itemCount} {itemCount === 1 ? "articolo selezionato" : "articoli selezionati"}
           </Text>
         </View>
         <View>
-          <Text style={styles.listTotalLabel}>Totale stimato</Text>
+          <Text style={styles.listTotalLabel}>Totale lista</Text>
           <Text style={styles.listTotalValue}>{formatPrice(total)}</Text>
         </View>
       </View>
-
       {entries.length === 0 ? (
-        <Text style={styles.emptyStateText}>
-          Aggiungi un'offerta qui sopra per iniziare a comporre la tua spesa.
-        </Text>
+        <EmptyState text="Aggiungi qualche prodotto per stimare il totale della spesa." />
       ) : (
         entries.map((entry) => (
           <View key={entry.offer.id} style={styles.listRow}>
@@ -511,10 +492,10 @@ function ShoppingListPanel({ entries, formatPrice, itemCount, total, onAdd, onRe
             </View>
             <View style={styles.stepperRow}>
               <Pressable onPress={() => onRemove(entry.offer)} style={styles.stepperButton}>
-                <Text style={styles.stepperText}>-</Text>
+                <Text style={styles.stepperButtonText}>-</Text>
               </Pressable>
               <Pressable onPress={() => onAdd(entry.offer)} style={styles.stepperButton}>
-                <Text style={styles.stepperText}>+</Text>
+                <Text style={styles.stepperButtonText}>+</Text>
               </Pressable>
             </View>
           </View>
@@ -524,15 +505,46 @@ function ShoppingListPanel({ entries, formatPrice, itemCount, total, onAdd, onRe
   );
 }
 
+function EmptyState({ text }) {
+  return <Text style={styles.emptyStateText}>{text}</Text>;
+}
+
 function localizeOffer(offer) {
   return {
     ...offer,
+    store: normalizeStoreLabel(offer.store),
     categoryLabel: getCategoryLabel(offer.category),
   };
 }
 
-function getStoreLabel(store) {
-  return store === STORE_FILTER_ALL ? STORE_FILTER_ALL : store;
+function normalizeStoreLabel(store) {
+  const normalized = String(store || "").trim().toLowerCase();
+  const matched = STORE_ORDER.find((item) => item.toLowerCase() === normalized);
+  return matched || store;
+}
+
+function sortStores(inputStores) {
+  return [...new Set(inputStores.map(normalizeStoreLabel))].sort((left, right) => {
+    const leftIndex = STORE_ORDER.indexOf(left);
+    const rightIndex = STORE_ORDER.indexOf(right);
+
+    if (leftIndex === -1 && rightIndex === -1) {
+      return left.localeCompare(right, "it");
+    }
+    if (leftIndex === -1) {
+      return 1;
+    }
+    if (rightIndex === -1) {
+      return -1;
+    }
+    return leftIndex - rightIndex;
+  });
+}
+
+function sortCategories(inputCategories) {
+  return [...new Set(inputCategories)].sort((left, right) =>
+    getCategoryLabel(left).localeCompare(getCategoryLabel(right), "it")
+  );
 }
 
 function getCategoryLabel(category) {
@@ -550,12 +562,26 @@ function formatPrice(value) {
   }).format(Number(value));
 }
 
-function formatPercent(value) {
+function formatPercentCompact(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return "Sconto n.d.";
+    return "Sconto N/D";
+  }
+  return `-${Math.round(Number(value))}%`;
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "Non indicata";
   }
 
-  return `${Math.round(Number(value))}% di sconto`;
+  try {
+    return new Intl.DateTimeFormat("it-IT", {
+      day: "2-digit",
+      month: "short",
+    }).format(new Date(value));
+  } catch {
+    return String(value);
+  }
 }
 
 function computeShoppingListTotal(entries) {
@@ -572,448 +598,420 @@ function countShoppingItems(entries) {
 
 const styles = StyleSheet.create({
   safeArea: {
-    backgroundColor: "#F8F9FA",
     flex: 1,
+    backgroundColor: "#F6F7FB",
   },
   scrollContent: {
-    paddingBottom: 32,
     paddingHorizontal: 20,
-    paddingTop: 12,
+    paddingTop: 18,
+    paddingBottom: 28,
   },
-  heroCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    padding: 22,
-    shadowColor: "#101828",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.06,
-    shadowRadius: 18,
-    elevation: 2,
-  },
-  heroHeaderRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
+  headerBlock: {
     marginBottom: 18,
   },
-  heroBadge: {
-    backgroundColor: "#EEF2FF",
+  headerBadge: {
+    alignSelf: "flex-start",
+    backgroundColor: "#E0ECFF",
     borderRadius: 999,
+    marginBottom: 12,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 7,
   },
-  heroBadgeText: {
-    color: "#3730A3",
+  headerBadgeText: {
+    color: "#1D4ED8",
     fontFamily: "SpaceGrotesk-Bold",
     fontSize: 12,
   },
-  heroSmallText: {
-    color: "#667085",
-    fontFamily: "SpaceGrotesk-Regular",
-    fontSize: 12,
-  },
-  heroTitle: {
-    color: "#101828",
+  appTitle: {
+    color: "#111827",
     fontFamily: "SpaceGrotesk-Bold",
     fontSize: 30,
-    lineHeight: 38,
-    marginBottom: 12,
+    lineHeight: 36,
   },
-  heroSubtitle: {
-    color: "#475467",
+  appSubtitle: {
+    color: "#6B7280",
     fontFamily: "SpaceGrotesk-Regular",
     fontSize: 15,
     lineHeight: 24,
-  },
-  loadingCard: {
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#EAECF0",
-    marginTop: 16,
-    padding: 28,
-    shadowColor: "#101828",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
-    elevation: 1,
-  },
-  loadingTitle: {
-    color: "#101828",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 18,
-    marginTop: 14,
-  },
-  loadingSubtitle: {
-    color: "#667085",
-    fontFamily: "SpaceGrotesk-Regular",
-    fontSize: 14,
-    lineHeight: 22,
     marginTop: 8,
-    textAlign: "center",
-  },
-  errorCard: {
-    backgroundColor: "#FFF4ED",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#FDDCAB",
-    marginTop: 16,
-    padding: 18,
-  },
-  errorCardTitle: {
-    color: "#9A3412",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 16,
-    marginBottom: 6,
-  },
-  errorCardText: {
-    color: "#9A3412",
-    fontFamily: "SpaceGrotesk-Regular",
-    fontSize: 14,
-    lineHeight: 22,
-  },
-  retryButton: {
-    alignSelf: "flex-start",
-    backgroundColor: "#111827",
-    borderRadius: 12,
-    marginTop: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  retryButtonText: {
-    color: "#FFFFFF",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 13,
   },
   statsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 12,
-    marginTop: 16,
+    marginBottom: 16,
   },
   statCard: {
+    flexGrow: 1,
+    minWidth: "30%",
     backgroundColor: "#FFFFFF",
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#EAECF0",
-    flexGrow: 1,
-    minWidth: "30%",
+    borderColor: "#E5E7EB",
     padding: 16,
-    shadowColor: "#101828",
-    shadowOffset: { width: 0, height: 6 },
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.04,
-    shadowRadius: 12,
+    shadowRadius: 18,
     elevation: 1,
   },
   statValue: {
-    color: "#101828",
+    color: "#111827",
     fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 19,
+    fontSize: 20,
   },
   statLabel: {
-    color: "#667085",
+    color: "#6B7280",
     fontFamily: "SpaceGrotesk-Regular",
     fontSize: 12,
     marginTop: 6,
+  },
+  searchCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginBottom: 16,
+    padding: 18,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.04,
+    shadowRadius: 18,
+    elevation: 1,
   },
   sectionCard: {
     backgroundColor: "#FFFFFF",
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#EAECF0",
-    marginTop: 16,
+    borderColor: "#E5E7EB",
+    marginBottom: 16,
     padding: 18,
-    shadowColor: "#101828",
-    shadowOffset: { width: 0, height: 6 },
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.04,
-    shadowRadius: 12,
+    shadowRadius: 18,
     elevation: 1,
   },
   sectionHeader: {
     marginBottom: 14,
   },
   sectionTitle: {
-    color: "#101828",
+    color: "#111827",
     fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 20,
+    fontSize: 19,
     marginBottom: 6,
   },
   sectionSubtitle: {
-    color: "#667085",
+    color: "#6B7280",
     fontFamily: "SpaceGrotesk-Regular",
     fontSize: 14,
     lineHeight: 22,
+  },
+  searchInput: {
+    backgroundColor: "#F8FAFC",
+    borderColor: "#D1D5DB",
+    borderRadius: 14,
+    borderWidth: 1,
+    color: "#111827",
+    fontFamily: "SpaceGrotesk-Regular",
+    fontSize: 15,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginTop: 14,
   },
   chip: {
     borderRadius: 999,
     borderWidth: 1,
     marginRight: 10,
     paddingHorizontal: 15,
-    paddingVertical: 11,
+    paddingVertical: 10,
   },
   chipActive: {
-    backgroundColor: "#111827",
-    borderColor: "#111827",
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
   },
   chipIdle: {
-    backgroundColor: "#FFFFFF",
-    borderColor: "#D0D5DD",
+    backgroundColor: "#F8FAFC",
+    borderColor: "#D1D5DB",
   },
-  chipLabel: {
+  chipText: {
     fontSize: 13,
   },
-  chipLabelActive: {
+  chipTextActive: {
     color: "#FFFFFF",
     fontFamily: "SpaceGrotesk-Bold",
   },
-  chipLabelIdle: {
-    color: "#344054",
+  chipTextIdle: {
+    color: "#374151",
     fontFamily: "SpaceGrotesk-Regular",
   },
-  searchInput: {
-    backgroundColor: "#F8FAFC",
-    borderColor: "#D0D5DD",
+  feedbackCard: {
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
     borderRadius: 16,
     borderWidth: 1,
-    color: "#101828",
-    fontFamily: "SpaceGrotesk-Regular",
-    fontSize: 15,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    borderColor: "#E5E7EB",
+    marginBottom: 16,
+    padding: 24,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.04,
+    shadowRadius: 18,
+    elevation: 1,
   },
-  errorText: {
-    color: "#B42318",
+  feedbackTitle: {
+    color: "#111827",
     fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 13,
-    marginTop: 12,
+    fontSize: 18,
+    marginTop: 14,
+    textAlign: "center",
   },
-  helperText: {
-    color: "#667085",
+  errorTitle: {
+    color: "#111827",
+    fontFamily: "SpaceGrotesk-Bold",
+    fontSize: 18,
+    textAlign: "center",
+  },
+  feedbackText: {
+    color: "#6B7280",
     fontFamily: "SpaceGrotesk-Regular",
     fontSize: 14,
     lineHeight: 22,
-    marginTop: 12,
+    marginTop: 10,
+    textAlign: "center",
   },
-  bestCard: {
-    backgroundColor: "#FFFFFF",
-    borderColor: "#EAECF0",
-    borderRadius: 16,
-    borderWidth: 1,
-    marginRight: 16,
-    minHeight: 196,
-    padding: 18,
-    width: 270,
-    shadowColor: "#101828",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 1,
-  },
-  bestHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
-  storeBadge: {
-    backgroundColor: "#F2F4F7",
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  storeBadgeText: {
-    color: "#344054",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 12,
-  },
-  discountText: {
-    color: "#027A48",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 14,
-  },
-  bestTitle: {
-    color: "#101828",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 20,
-    marginBottom: 6,
-  },
-  bestSubtitle: {
-    color: "#667085",
-    fontFamily: "SpaceGrotesk-Regular",
-    fontSize: 14,
-    marginBottom: 20,
-  },
-  bestFooter: {
-    alignItems: "flex-end",
-    flex: 1,
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  primaryMiniButton: {
-    backgroundColor: "#111827",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  primaryMiniButtonText: {
-    color: "#FFFFFF",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 13,
-  },
-  offerCard: {
-    backgroundColor: "#FFFFFF",
-    borderColor: "#EAECF0",
-    borderRadius: 16,
-    borderWidth: 1,
-    marginBottom: 16,
-    padding: 18,
-    shadowColor: "#101828",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 1,
-  },
-  offerTopRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
-  offerTitle: {
-    color: "#101828",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 21,
-    marginBottom: 6,
-  },
-  offerSubtitle: {
-    color: "#667085",
-    fontFamily: "SpaceGrotesk-Regular",
-    fontSize: 14,
-    marginBottom: 16,
-  },
-  offerMetaRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 18,
-  },
-  validityBlock: {
-    alignItems: "flex-end",
-  },
-  validityLabel: {
-    color: "#667085",
-    fontFamily: "SpaceGrotesk-Regular",
-    fontSize: 12,
-  },
-  validityValue: {
-    color: "#101828",
-    fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 14,
-    marginTop: 4,
-  },
-  oldPrice: {
-    color: "#98A2B3",
+  feedbackHint: {
+    color: "#6B7280",
     fontFamily: "SpaceGrotesk-Regular",
     fontSize: 13,
-    textDecorationLine: "line-through",
+    lineHeight: 20,
+    marginTop: 8,
+    textAlign: "center",
   },
-  newPrice: {
-    color: "#101828",
+  debugBox: {
+    width: "100%",
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E5E7EB",
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: 16,
+    padding: 14,
+  },
+  debugTitle: {
+    color: "#374151",
     fontFamily: "SpaceGrotesk-Bold",
-    fontSize: 26,
-    marginTop: 4,
+    fontSize: 13,
+    marginBottom: 6,
   },
-  offerActionsRow: {
-    flexDirection: "row",
-    gap: 10,
+  debugText: {
+    color: "#6B7280",
+    fontFamily: "SpaceGrotesk-Regular",
+    fontSize: 12,
+    lineHeight: 18,
   },
   primaryButton: {
-    backgroundColor: "#111827",
-    borderRadius: 12,
-    flex: 1,
+    backgroundColor: "#2563EB",
+    borderRadius: 14,
+    marginTop: 18,
+    paddingHorizontal: 18,
     paddingVertical: 14,
   },
   primaryButtonText: {
     color: "#FFFFFF",
     fontFamily: "SpaceGrotesk-Bold",
     fontSize: 14,
-    textAlign: "center",
   },
-  secondaryButton: {
-    backgroundColor: "#F8FAFC",
-    borderColor: "#D0D5DD",
-    borderRadius: 12,
+  bestDealCard: {
+    width: 278,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
     borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginRight: 14,
+    padding: 18,
+  },
+  bestDealTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  storePill: {
+    alignSelf: "flex-start",
+    backgroundColor: "#EEF2FF",
+    borderRadius: 999,
+    color: "#1E3A8A",
+    fontFamily: "SpaceGrotesk-Bold",
+    fontSize: 12,
+    overflow: "hidden",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  discountPill: {
+    color: "#DC2626",
+    fontFamily: "SpaceGrotesk-Bold",
+    fontSize: 13,
+  },
+  offerCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginBottom: 14,
+    padding: 18,
+  },
+  offerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  offerName: {
+    color: "#111827",
+    fontFamily: "SpaceGrotesk-Bold",
+    fontSize: 21,
+    lineHeight: 28,
+  },
+  offerMeta: {
+    color: "#6B7280",
+    fontFamily: "SpaceGrotesk-Regular",
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+  },
+  priceRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    marginTop: 20,
+  },
+  offerDetailsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    marginTop: 18,
+  },
+  oldPrice: {
+    color: "#9CA3AF",
+    fontFamily: "SpaceGrotesk-Regular",
+    fontSize: 13,
+    textDecorationLine: "line-through",
+  },
+  newPrice: {
+    color: "#111827",
+    fontFamily: "SpaceGrotesk-Bold",
+    fontSize: 28,
+    marginTop: 4,
+  },
+  validityBox: {
+    alignItems: "flex-end",
+  },
+  validityLabel: {
+    color: "#6B7280",
+    fontFamily: "SpaceGrotesk-Regular",
+    fontSize: 12,
+  },
+  validityValue: {
+    color: "#111827",
+    fontFamily: "SpaceGrotesk-Bold",
+    fontSize: 14,
+    marginTop: 4,
+  },
+  actionsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 18,
+  },
+  primaryButtonInline: {
     flex: 1,
+    backgroundColor: "#2563EB",
+    borderRadius: 14,
     paddingVertical: 14,
   },
-  secondaryButtonDisabled: {
-    opacity: 0.45,
-  },
-  secondaryButtonText: {
-    color: "#344054",
+  primaryButtonInlineText: {
+    color: "#FFFFFF",
     fontFamily: "SpaceGrotesk-Bold",
     fontSize: 14,
     textAlign: "center",
   },
-  secondaryButtonTextDisabled: {
-    color: "#98A2B3",
+  secondaryButtonInline: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+    borderColor: "#D1D5DB",
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 14,
+  },
+  secondaryButtonInlineText: {
+    color: "#374151",
+    fontFamily: "SpaceGrotesk-Bold",
+    fontSize: 14,
+    textAlign: "center",
+  },
+  secondaryButtonInlineTextDisabled: {
+    color: "#9CA3AF",
+  },
+  buttonDisabled: {
+    opacity: 0.55,
+  },
+  miniActionButton: {
+    backgroundColor: "#0F766E",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  miniActionButtonText: {
+    color: "#FFFFFF",
+    fontFamily: "SpaceGrotesk-Bold",
+    fontSize: 13,
   },
   listCard: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#EAECF0",
     borderRadius: 16,
     borderWidth: 1,
-    marginTop: 16,
+    borderColor: "#E5E7EB",
     padding: 18,
-    shadowColor: "#101828",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.04,
+    shadowRadius: 18,
     elevation: 1,
   },
   listHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 18,
+    marginBottom: 16,
   },
   listTitle: {
-    color: "#101828",
+    color: "#111827",
     fontFamily: "SpaceGrotesk-Bold",
     fontSize: 18,
   },
-  listCount: {
-    color: "#667085",
+  listSubtitle: {
+    color: "#6B7280",
     fontFamily: "SpaceGrotesk-Regular",
     fontSize: 13,
     marginTop: 6,
   },
   listTotalLabel: {
-    color: "#667085",
+    color: "#6B7280",
     fontFamily: "SpaceGrotesk-Regular",
     fontSize: 12,
     textAlign: "right",
   },
   listTotalValue: {
-    color: "#101828",
+    color: "#111827",
     fontFamily: "SpaceGrotesk-Bold",
     fontSize: 24,
     marginTop: 6,
     textAlign: "right",
   },
-  emptyStateText: {
-    color: "#667085",
-    fontFamily: "SpaceGrotesk-Regular",
-    fontSize: 14,
-    lineHeight: 22,
-  },
   listRow: {
-    alignItems: "center",
-    borderTopColor: "#EAECF0",
-    borderTopWidth: 1,
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
     paddingVertical: 14,
   },
   listRowContent: {
@@ -1021,12 +1019,12 @@ const styles = StyleSheet.create({
     paddingRight: 16,
   },
   listRowTitle: {
-    color: "#101828",
+    color: "#111827",
     fontFamily: "SpaceGrotesk-Bold",
     fontSize: 15,
   },
   listRowSubtitle: {
-    color: "#667085",
+    color: "#6B7280",
     fontFamily: "SpaceGrotesk-Regular",
     fontSize: 13,
     marginTop: 4,
@@ -1037,15 +1035,21 @@ const styles = StyleSheet.create({
   },
   stepperButton: {
     alignItems: "center",
-    backgroundColor: "#F2F4F7",
-    borderRadius: 12,
-    height: 38,
     justifyContent: "center",
     width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "#EFF6FF",
   },
-  stepperText: {
-    color: "#101828",
+  stepperButtonText: {
+    color: "#1D4ED8",
     fontFamily: "SpaceGrotesk-Bold",
     fontSize: 18,
+  },
+  emptyStateText: {
+    color: "#6B7280",
+    fontFamily: "SpaceGrotesk-Regular",
+    fontSize: 14,
+    lineHeight: 22,
   },
 });

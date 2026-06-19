@@ -3,13 +3,18 @@
     "name": "Catania Spesa Top",
     "slug": "catania-spesa-top",
     "version": "1.0.0",
-    "icon": "./assets/icon.png",
-    "backgroundColor": "#F8F9FA",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "backgroundColor": "#F6F7FB",
     "assetBundlePatterns": [
       "**/*"
     ],
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F6F7FB"
+    },
     "web": {
       "bundler": "metro"
     },
@@ -22,7 +27,7 @@
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#F8F9FA"
+        "backgroundColor": "#F6F7FB"
       }
     },
     "extra": {
