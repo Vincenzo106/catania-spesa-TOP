@@ -51,4 +51,8 @@ export async function fetchBestDeals({ store, category, limit = 8 }) {
   return request("/offers/best", { store, category, limit });
 }
 
+export async function fetchMetadata() {
+  return request("/metadata");
+}
+
 export { API_BASE_URL };

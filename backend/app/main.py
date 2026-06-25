@@ -4,21 +4,29 @@ from pathlib import Path
 import re
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from app.config import Settings, get_settings
 from app.database import OffersRepository
 from app.schemas import (
+    AdminUpdateResponse,
     BestDealsResponse,
     ErrorResponse,
     HealthResponse,
     IngestResponse,
+    MetadataResponse,
     OfferListResponse,
     StoreListResponse,
 )
-from app.services.offers import normalize_offer
+from app.services.flyer_fetcher import FlyerFetcher
+from app.services.flyer_parser import FlyerParser
+from app.services.offer_normalizer import normalize_extracted_batch
+from app.services.source_discovery import SourceDiscoveryService
+from app.services.source_registry import get_source_registry
+from app.services.update_metadata import UpdateMetadataManager
+from app.services.update_runner import UpdateRunner
 from app.services.vision import VisionExtractionError, build_vision_extractor
 
 
@@ -37,14 +45,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved_settings.seed_demo_data:
             repository.seed_demo_offers(resolved_settings.demo_data_path)
 
+        metadata_manager = UpdateMetadataManager(repository)
+        metadata_manager.sync_source_registry()
+        metadata_manager.bootstrap_if_needed()
+
+        vision_extractor = build_vision_extractor(resolved_settings)
+        fetcher = FlyerFetcher(resolved_settings)
+        discovery_service = SourceDiscoveryService(
+            fetcher,
+            max_flyers_per_store=resolved_settings.max_flyers_per_store,
+        )
+        flyer_parser = FlyerParser(vision_extractor, fetcher)
+        update_runner = UpdateRunner(
+            settings=resolved_settings,
+            repository=repository,
+            fetcher=fetcher,
+            discovery_service=discovery_service,
+            flyer_parser=flyer_parser,
+            metadata_manager=metadata_manager,
+        )
+
         app.state.settings = resolved_settings
         app.state.repository = repository
-        app.state.vision_extractor = build_vision_extractor(resolved_settings)
+        app.state.metadata_manager = metadata_manager
+        app.state.vision_extractor = vision_extractor
+        app.state.update_runner = update_runner
         yield
 
     app = FastAPI(
         title=resolved_settings.app_name,
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
         responses={500: {"model": ErrorResponse}},
     )
@@ -76,7 +106,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/stores", response_model=StoreListResponse)
     def list_stores(request: Request) -> StoreListResponse:
         repository: OffersRepository = request.app.state.repository
-        return StoreListResponse(stores=repository.list_stores())
+        stores = _merge_unique(repository.list_supported_stores(), repository.list_stores())
+        return StoreListResponse(stores=stores)
 
     @app.get("/offers", response_model=OfferListResponse)
     @app.get("/api/offers", response_model=OfferListResponse)
@@ -99,7 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return OfferListResponse(
             items=items,
             total=total,
-            available_stores=repository.list_stores(),
+            available_stores=_merge_unique(repository.list_supported_stores(), repository.list_stores()),
             available_categories=repository.list_categories(store=store or None),
         )
 
@@ -119,6 +150,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return BestDealsResponse(items=items)
 
+    @app.get("/metadata", response_model=MetadataResponse)
+    @app.get("/api/metadata", response_model=MetadataResponse)
+    def get_metadata(request: Request) -> MetadataResponse:
+        metadata_manager: UpdateMetadataManager = request.app.state.metadata_manager
+        return metadata_manager.build_public_metadata()
+
+    @app.post("/admin/update-offers", response_model=AdminUpdateResponse)
+    def update_offers(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> AdminUpdateResponse:
+        _authorize_admin(request, authorization)
+        update_runner: UpdateRunner = request.app.state.update_runner
+        return update_runner.run_all_updates()
+
+    @app.post("/admin/update-store/{store_name}", response_model=AdminUpdateResponse)
+    def update_single_store(
+        request: Request,
+        store_name: str,
+        authorization: str | None = Header(default=None),
+    ) -> AdminUpdateResponse:
+        _authorize_admin(request, authorization)
+        configured_sources = get_source_registry(active_only=True, store=store_name)
+        if not configured_sources:
+            raise HTTPException(status_code=404, detail=f"Nessuna fonte configurata per {store_name}.")
+        update_runner: UpdateRunner = request.app.state.update_runner
+        return update_runner.run_store_update(store_name)
+
     @app.post("/offers/ingest", response_model=IngestResponse)
     async def ingest_flyer(
         request: Request,
@@ -136,6 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         settings: Settings = request.app.state.settings
         repository: OffersRepository = request.app.state.repository
+        metadata_manager: UpdateMetadataManager = request.app.state.metadata_manager
         extractor = request.app.state.vision_extractor
 
         uploaded_bytes = await file.read()
@@ -150,18 +210,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except VisionExtractionError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        normalized_offers = [
-            normalized
-            for normalized in (
-                normalize_offer(
-                    store=store,
-                    source_filename=safe_filename,
-                    extracted_offer=offer,
-                )
-                for offer in extracted_batch.offers
-            )
-            if normalized is not None
-        ]
+        normalized_offers = normalize_extracted_batch(
+            store=store,
+            source_filename=safe_filename,
+            extracted_batch=extracted_batch,
+            source="manual-upload",
+            source_url=None,
+            source_type="manual",
+            flyer_url=None,
+            flyer_title=file.filename,
+            store_location=None,
+            city="Catania",
+            is_demo=False,
+        )
 
         if not normalized_offers:
             raise HTTPException(
@@ -170,14 +231,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         if replace_existing:
-            repository.delete_offers_by_source(store=store, source_filename=safe_filename)
+            write_result = repository.refresh_store_offers(store, normalized_offers)
+        else:
+            write_result = repository.upsert_offers(normalized_offers)
 
-        records = repository.insert_offers(normalized_offers)
+        metadata_manager.record_manual_ingest(store)
+
         return IngestResponse(
             source_filename=safe_filename,
             provider=settings.vision_provider,
-            offers_created=len(records),
-            records=records,
+            offers_created=len(write_result.records),
+            records=write_result.records,
         )
 
     return app
@@ -186,12 +250,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 app = create_app()
 
 
+def _authorize_admin(request: Request, authorization: str | None) -> None:
+    settings: Settings = request.app.state.settings
+    if not settings.admin_update_token:
+        raise HTTPException(status_code=503, detail="ADMIN_UPDATE_TOKEN is not configured.")
+
+    expected = f"Bearer {settings.admin_update_token}"
+    if authorization != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+
+
 def _safe_upload_filename(filename: str | None) -> str:
     candidate = Path(filename or "upload").name.strip()
     suffix = Path(candidate).suffix.casefold()
     stem = Path(candidate).stem
     normalized_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("._-") or "upload"
     return f"{normalized_stem}{suffix}"
+
+
+def _merge_unique(*sequences: list[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for sequence in sequences:
+        for value in sequence:
+            if value in seen:
+                continue
+            seen.add(value)
+            merged.append(value)
+    return merged
 
 
 if __name__ == "__main__":

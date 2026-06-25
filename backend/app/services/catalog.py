@@ -5,7 +5,7 @@ import unicodedata
 KNOWN_STORES = [
     "Coop",
     "Conad",
-    "Decò",
+    "Dec\u00f2",
     "Famila",
     "MD",
     "Eurospin",

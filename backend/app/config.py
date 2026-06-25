@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     poppler_path: Path | None = None
     cors_origins: str = "*"
     seed_demo_data: bool = True
+    admin_update_token: str | None = None
+    update_user_agent: str = "CataniaSpesaTopBot/1.0 (+https://catania-spesa-top.onrender.com)"
+    update_timeout_seconds: float = Field(default=25.0, ge=5.0, le=120.0)
+    max_flyers_per_store: int = Field(default=3, ge=1, le=10)
 
     vision_provider: Literal["mock", "openai"] = "mock"
     openai_api_key: str | None = None
