@@ -102,35 +102,9 @@ class MockVisionExtractor(VisionExtractor):
                 ]
             )
 
-        default_offers = {
-            "coop": [
-                ("Pasta Barilla 500g", "Barilla", 1.89, 0.99),
-                ("Latte UHT 1L", "Parmalat", 1.79, 1.19),
-                ("Pomodori Ciliegino 500g", None, 2.79, 1.69),
-            ],
-            "conad": [
-                ("Banane al kg", "Chiquita", 2.29, 1.49),
-                ("Carta Igienica 12 rotoli", "Conad", 6.99, 4.99),
-                ("Succo ACE 1L", "Yoga", 2.49, 1.59),
-            ],
-            "famila": [
-                ("Passata di Pomodoro 700g", "Valfrutta", 2.19, 1.19),
-                ("Caffè Macinato 250g", "Splendid", 4.99, 3.49),
-                ("Mozzarella 125g", "Santa Lucia", 1.49, 0.99),
-            ],
-        }
-        library = default_offers.get(store.casefold(), default_offers["coop"])
-        return ExtractedOfferBatch(
-            offers=[
-                ExtractedOffer(
-                    product_name=product_name,
-                    brand=brand,
-                    original_price=original_price,
-                    discounted_price=discounted_price,
-                    flyer_valid_until="2026-06-30",
-                )
-                for product_name, brand, original_price, discounted_price in library
-            ]
+        raise VisionExtractionError(
+            f"VISION_PROVIDER=mock non puo' estrarre offerte reali dal volantino di {store}. "
+            "Configura VISION_PROVIDER=openai con OPENAI_API_KEY oppure usa un caricamento manuale gia' verificato."
         )
 
 
@@ -201,7 +175,7 @@ class OpenAIVisionExtractor(VisionExtractor):
             )
             payload = json.loads(response.output_text)
             return ExtractedOfferBatch.model_validate(payload)
-        except Exception as exc:  # pragma: no cover - defensive boundary for API failures
+        except Exception as exc:  # pragma: no cover
             raise VisionExtractionError(f"Vision extraction failed: {exc}") from exc
 
     def _build_image_input(self, file_path: Path) -> dict[str, str]:
