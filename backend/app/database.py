@@ -887,9 +887,10 @@ class OffersRepository:
             where_clauses = self._public_offer_filters(connection)
             rows = connection.execute(
                 f"""
-                SELECT DISTINCT store
+                SELECT store
                 FROM offers
                 WHERE {' AND '.join(where_clauses)}
+                GROUP BY store
                 ORDER BY LOWER(store) ASC, store ASC
                 """
             ).fetchall()
@@ -899,10 +900,11 @@ class OffersRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT DISTINCT store
+                SELECT store, MIN(priority) AS min_priority
                 FROM source_state
                 WHERE active = 1
-                ORDER BY priority ASC, LOWER(store) ASC, store ASC
+                GROUP BY store
+                ORDER BY min_priority ASC, LOWER(store) ASC, store ASC
                 """
             ).fetchall()
         return [row["store"] for row in rows]
@@ -915,8 +917,9 @@ class OffersRepository:
                 where_clauses.append("store = ?")
                 parameters.append(store)
             query = (
-                "SELECT DISTINCT category FROM offers "
+                "SELECT category FROM offers "
                 f"WHERE {' AND '.join(where_clauses)} "
+                "GROUP BY category "
                 "ORDER BY LOWER(category) ASC, category ASC"
             )
             rows = connection.execute(query, parameters).fetchall()
