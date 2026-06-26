@@ -3,12 +3,20 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
+from urllib.parse import urlsplit, urlunsplit
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    psycopg = None
+    dict_row = None
 
 from app.schemas import MetadataResponse, OfferCreate, OfferRecord, SourceRegistryItem, SourceStateRecord
 
 
-CREATE_OFFERS_TABLE = """
+SQLITE_CREATE_OFFERS_TABLE = """
 CREATE TABLE IF NOT EXISTS offers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     store TEXT NOT NULL,
@@ -41,7 +49,40 @@ CREATE TABLE IF NOT EXISTS offers (
 );
 """
 
-CREATE_UPDATE_METADATA_TABLE = """
+POSTGRES_CREATE_OFFERS_TABLE = """
+CREATE TABLE IF NOT EXISTS offers (
+    id BIGSERIAL PRIMARY KEY,
+    store TEXT NOT NULL,
+    category TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    normalized_product_name TEXT NOT NULL DEFAULT '',
+    brand TEXT,
+    original_price DOUBLE PRECISION,
+    discounted_price DOUBLE PRECISION NOT NULL,
+    discount_percentage DOUBLE PRECISION,
+    unit TEXT,
+    quantity TEXT,
+    valid_from DATE,
+    flyer_valid_until DATE,
+    flyer_url TEXT,
+    flyer_title TEXT,
+    source_url TEXT,
+    source_type TEXT,
+    source TEXT,
+    source_filename TEXT,
+    store_location TEXT,
+    city TEXT,
+    confidence_score DOUBLE PRECISION,
+    is_demo INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    extraction_batch_id TEXT,
+    dedupe_key TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL
+);
+"""
+
+SQLITE_CREATE_UPDATE_METADATA_TABLE = """
 CREATE TABLE IF NOT EXISTS update_metadata (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     last_successful_update TEXT,
@@ -61,7 +102,28 @@ CREATE TABLE IF NOT EXISTS update_metadata (
 );
 """
 
-CREATE_SOURCE_STATE_TABLE = """
+POSTGRES_CREATE_UPDATE_METADATA_TABLE = """
+CREATE TABLE IF NOT EXISTS update_metadata (
+    id INTEGER PRIMARY KEY,
+    last_successful_update TIMESTAMP,
+    last_attempted_update TIMESTAMP,
+    last_check TIMESTAMP,
+    offers_count INTEGER NOT NULL DEFAULT 0,
+    active_offers_count INTEGER NOT NULL DEFAULT 0,
+    stores_json TEXT NOT NULL DEFAULT '[]',
+    stores_supported_json TEXT NOT NULL DEFAULT '[]',
+    stores_updated_json TEXT NOT NULL DEFAULT '[]',
+    sources_checked INTEGER NOT NULL DEFAULT 0,
+    errors_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'never_run',
+    next_suggested_check TIMESTAMP,
+    data_mode TEXT NOT NULL DEFAULT 'unknown',
+    updated_at TIMESTAMP,
+    CONSTRAINT update_metadata_single_row CHECK (id = 1)
+);
+"""
+
+SQLITE_CREATE_SOURCE_STATE_TABLE = """
 CREATE TABLE IF NOT EXISTS source_state (
     source_key TEXT PRIMARY KEY,
     store TEXT NOT NULL,
@@ -84,6 +146,32 @@ CREATE TABLE IF NOT EXISTS source_state (
     last_flyer_title TEXT,
     last_change_detected_at TEXT,
     updated_at TEXT
+);
+"""
+
+POSTGRES_CREATE_SOURCE_STATE_TABLE = """
+CREATE TABLE IF NOT EXISTS source_state (
+    source_key TEXT PRIMARY KEY,
+    store TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    city_filter TEXT,
+    province_filter TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 100,
+    parser_strategy TEXT,
+    notes TEXT,
+    selectors_json TEXT NOT NULL DEFAULT '{}',
+    direct_flyer_url TEXT,
+    store_location TEXT,
+    last_seen_flyer_url TEXT,
+    last_seen_hash TEXT,
+    last_checked_at TIMESTAMP,
+    last_success_at TIMESTAMP,
+    last_error TEXT,
+    last_flyer_title TEXT,
+    last_change_detected_at TIMESTAMP,
+    updated_at TIMESTAMP
 );
 """
 
@@ -113,9 +201,14 @@ REQUIRED_METADATA_COLUMNS = {
 }
 
 
-ACTIVE_OFFERS_SQL = """
+SQLITE_ACTIVE_OFFERS_SQL = """
 is_active = 1
 AND (flyer_valid_until IS NULL OR DATE(flyer_valid_until) >= DATE('now'))
+"""
+
+POSTGRES_ACTIVE_OFFERS_SQL = """
+is_active = 1
+AND (flyer_valid_until IS NULL OR flyer_valid_until >= CURRENT_DATE)
 """
 
 
@@ -127,46 +220,139 @@ class OfferWriteResult:
     skipped: int = 0
 
 
+class PostgresCursorProxy:
+    def __init__(self, cursor: Any, *, lastrowid: int | None = None):
+        self._cursor = cursor
+        self.lastrowid = lastrowid
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+
+class PostgresConnectionProxy:
+    def __init__(self, database_url: str):
+        if psycopg is None or dict_row is None:
+            raise RuntimeError(
+                "DATABASE_URL is configured but psycopg is not installed. "
+                "Install backend requirements before starting the API."
+            )
+        self._connection = psycopg.connect(database_url, row_factory=dict_row)
+
+    def execute(self, query: str, params: Iterable[Any] | None = None) -> PostgresCursorProxy:
+        translated_query = query.replace("?", "%s")
+        normalized_params = tuple(params) if params is not None else None
+
+        insert_offer = translated_query.lstrip().upper().startswith("INSERT INTO OFFERS ")
+        if insert_offer and "RETURNING" not in translated_query.upper():
+            translated_query = translated_query.rstrip().rstrip(";") + " RETURNING id"
+
+        cursor = self._connection.execute(translated_query, normalized_params)
+        if insert_offer:
+            returned = cursor.fetchone()
+            lastrowid = int(returned["id"]) if returned and returned.get("id") is not None else None
+            return PostgresCursorProxy(cursor, lastrowid=lastrowid)
+        return PostgresCursorProxy(cursor)
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+    def rollback(self) -> None:
+        self._connection.rollback()
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self.rollback()
+        self.close()
+
+
 class OffersRepository:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, database_url: str | None = None):
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database_url = database_url
+        self.backend_kind = "postgresql" if database_url else "sqlite"
+        if self.backend_kind == "sqlite":
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute(CREATE_OFFERS_TABLE)
-            connection.execute(CREATE_UPDATE_METADATA_TABLE)
-            connection.execute(CREATE_SOURCE_STATE_TABLE)
+            connection.execute(self._create_offers_table_sql())
+            connection.execute(self._create_update_metadata_table_sql())
+            connection.execute(self._create_source_state_table_sql())
             self._ensure_offer_columns(connection)
             self._ensure_metadata_columns(connection)
             self._ensure_metadata_row(connection)
             self._backfill_offer_derived_fields(connection)
             connection.commit()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _create_offers_table_sql(self) -> str:
+        if self.backend_kind == "postgresql":
+            return POSTGRES_CREATE_OFFERS_TABLE
+        return SQLITE_CREATE_OFFERS_TABLE
+
+    def _create_update_metadata_table_sql(self) -> str:
+        if self.backend_kind == "postgresql":
+            return POSTGRES_CREATE_UPDATE_METADATA_TABLE
+        return SQLITE_CREATE_UPDATE_METADATA_TABLE
+
+    def _create_source_state_table_sql(self) -> str:
+        if self.backend_kind == "postgresql":
+            return POSTGRES_CREATE_SOURCE_STATE_TABLE
+        return SQLITE_CREATE_SOURCE_STATE_TABLE
+
+    def _active_offers_sql(self) -> str:
+        if self.backend_kind == "postgresql":
+            return POSTGRES_ACTIVE_OFFERS_SQL
+        return SQLITE_ACTIVE_OFFERS_SQL
+
+    def _connect(self):
+        if self.backend_kind == "postgresql":
+            return PostgresConnectionProxy(self.database_url or "")
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         return connection
 
-    def _ensure_offer_columns(self, connection: sqlite3.Connection) -> None:
-        existing_columns = {
-            row["name"] for row in connection.execute("PRAGMA table_info(offers)").fetchall()
-        }
+    def _get_existing_columns(self, connection: Any, table_name: str) -> set[str]:
+        if self.backend_kind == "postgresql":
+            rows = connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = ?
+                """,
+                (table_name,),
+            ).fetchall()
+            return {str(row["column_name"]) for row in rows}
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    def _ensure_offer_columns(self, connection: Any) -> None:
+        existing_columns = self._get_existing_columns(connection, "offers")
         for column_name, alter_sql in REQUIRED_OFFER_COLUMNS.items():
             if column_name not in existing_columns:
                 connection.execute(alter_sql)
 
-    def _ensure_metadata_columns(self, connection: sqlite3.Connection) -> None:
-        existing_columns = {
-            row["name"]
-            for row in connection.execute("PRAGMA table_info(update_metadata)").fetchall()
-        }
+    def _ensure_metadata_columns(self, connection: Any) -> None:
+        existing_columns = self._get_existing_columns(connection, "update_metadata")
         for column_name, alter_sql in REQUIRED_METADATA_COLUMNS.items():
             if column_name not in existing_columns:
                 connection.execute(alter_sql)
 
-    def _ensure_metadata_row(self, connection: sqlite3.Connection) -> None:
+    def _ensure_metadata_row(self, connection: Any) -> None:
         row = connection.execute("SELECT id FROM update_metadata WHERE id = 1").fetchone()
         if row:
             return
@@ -193,7 +379,7 @@ class OffersRepository:
             """
         )
 
-    def _backfill_offer_derived_fields(self, connection: sqlite3.Connection) -> None:
+    def _backfill_offer_derived_fields(self, connection: Any) -> None:
         rows = connection.execute(
             """
             SELECT id, store, product_name, discounted_price, flyer_valid_until, flyer_url, source_url,
@@ -224,7 +410,7 @@ class OffersRepository:
             )
 
     @staticmethod
-    def _to_record(row: sqlite3.Row) -> OfferRecord:
+    def _to_record(row: Any) -> OfferRecord:
         return OfferRecord(
             id=row["id"],
             store=row["store"],
@@ -266,7 +452,7 @@ class OffersRepository:
         with self._connect() as connection:
             where_clauses: list[str] = []
             if active_only:
-                where_clauses.extend(self._public_offer_filters(connection) if public_only else [ACTIVE_OFFERS_SQL])
+                where_clauses.extend(self._public_offer_filters(connection) if public_only else [self._active_offers_sql()])
             elif public_only and self._has_active_live_offers(connection):
                 where_clauses.append("is_demo = 0")
 
@@ -280,7 +466,7 @@ class OffersRepository:
         with self._connect() as connection:
             where_clauses: list[str] = []
             if active_only:
-                where_clauses.extend(self._public_offer_filters(connection) if public_only else [ACTIVE_OFFERS_SQL])
+                where_clauses.extend(self._public_offer_filters(connection) if public_only else [self._active_offers_sql()])
             elif public_only and self._has_active_live_offers(connection):
                 where_clauses.append("is_demo = 0")
 
@@ -289,20 +475,19 @@ class OffersRepository:
             row = connection.execute(query, (store,)).fetchone()
         return int(row["count"])
 
-    @staticmethod
-    def _has_active_live_offers(connection: sqlite3.Connection) -> bool:
+    def _has_active_live_offers(self, connection: Any) -> bool:
         row = connection.execute(
             f"""
             SELECT COUNT(*) AS count
             FROM offers
-            WHERE {ACTIVE_OFFERS_SQL}
+            WHERE {self._active_offers_sql()}
               AND is_demo = 0
             """
         ).fetchone()
         return bool(int(row["count"] or 0))
 
-    def _public_offer_filters(self, connection: sqlite3.Connection) -> list[str]:
-        filters = [ACTIVE_OFFERS_SQL]
+    def _public_offer_filters(self, connection: Any) -> list[str]:
+        filters = [self._active_offers_sql()]
         if self._has_active_live_offers(connection):
             filters.append("is_demo = 0")
         return filters
@@ -314,24 +499,45 @@ class OffersRepository:
             scoped_where = "WHERE store = ?"
             scoped_params.append(store)
 
-        active_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} {ACTIVE_OFFERS_SQL}"
+        active_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} {self._active_offers_sql()}"
         inactive_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} is_active = 0"
         demo_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} is_demo = 1"
         live_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} is_demo = 0"
-        expired_where = (
-            f"{scoped_where} {'AND' if scoped_where else 'WHERE'} "
-            "is_active = 1 AND flyer_valid_until IS NOT NULL AND DATE(flyer_valid_until) < DATE('now')"
+        expired_clause = (
+            "is_active = 1 AND flyer_valid_until IS NOT NULL AND flyer_valid_until < CURRENT_DATE"
+            if self.backend_kind == "postgresql"
+            else "is_active = 1 AND flyer_valid_until IS NOT NULL AND DATE(flyer_valid_until) < DATE('now')"
         )
+        expired_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} {expired_clause}"
         null_validity_where = (
             f"{scoped_where} {'AND' if scoped_where else 'WHERE'} "
             "is_active = 1 AND flyer_valid_until IS NULL"
         )
 
         with self._connect() as connection:
-            database_list = [
-                {"seq": row["seq"], "name": row["name"], "file": row["file"]}
-                for row in connection.execute("PRAGMA database_list").fetchall()
-            ]
+            if self.backend_kind == "postgresql":
+                db_meta = connection.execute(
+                    """
+                    SELECT
+                        current_database() AS database_name,
+                        current_schema() AS schema_name,
+                        pg_database_size(current_database()) AS database_size_bytes
+                    """
+                ).fetchone()
+                database_list = [
+                    {
+                        "seq": 0,
+                        "name": db_meta["database_name"],
+                        "file": _mask_database_url(self.database_url),
+                    }
+                ]
+                database_size_bytes = int(db_meta["database_size_bytes"] or 0)
+            else:
+                database_list = [
+                    {"seq": row["seq"], "name": row["name"], "file": row["file"]}
+                    for row in connection.execute("PRAGMA database_list").fetchall()
+                ]
+                database_size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
             total = int(
                 connection.execute(
                     f"SELECT COUNT(*) AS count FROM offers {scoped_where}",
@@ -414,9 +620,10 @@ class OffersRepository:
 
         db_path = self.db_path.resolve(strict=False)
         return {
-            "database_path": str(db_path),
-            "database_exists": db_path.exists(),
-            "database_size_bytes": db_path.stat().st_size if db_path.exists() else 0,
+            "backend_kind": self.backend_kind,
+            "database_path": str(db_path) if self.backend_kind == "sqlite" else (_mask_database_url(self.database_url) or "postgresql"),
+            "database_exists": db_path.exists() if self.backend_kind == "sqlite" else True,
+            "database_size_bytes": database_size_bytes,
             "sqlite_database_list": database_list,
             "store_scope": store,
             "counts": {
@@ -437,7 +644,7 @@ class OffersRepository:
                 "max_updated_at": bounds_row["max_updated_at"] if bounds_row else None,
             },
             "sample_rows": sample_rows,
-            "active_filter_sql": "is_active = 1 AND (flyer_valid_until IS NULL OR DATE(flyer_valid_until) >= DATE('now'))",
+            "active_filter_sql": self._active_offers_sql().strip(),
         }
 
     def seed_demo_offers(self, demo_file: Path) -> int:
@@ -518,7 +725,7 @@ class OffersRepository:
 
     def _upsert_offers(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         offers: list[OfferCreate],
         *,
         replace_store: bool,
@@ -683,7 +890,7 @@ class OffersRepository:
                 SELECT DISTINCT store
                 FROM offers
                 WHERE {' AND '.join(where_clauses)}
-                ORDER BY store COLLATE NOCASE ASC
+                ORDER BY LOWER(store) ASC, store ASC
                 """
             ).fetchall()
         return [row["store"] for row in rows]
@@ -695,7 +902,7 @@ class OffersRepository:
                 SELECT DISTINCT store
                 FROM source_state
                 WHERE active = 1
-                ORDER BY priority ASC, store COLLATE NOCASE ASC
+                ORDER BY priority ASC, LOWER(store) ASC, store ASC
                 """
             ).fetchall()
         return [row["store"] for row in rows]
@@ -710,7 +917,7 @@ class OffersRepository:
             query = (
                 "SELECT DISTINCT category FROM offers "
                 f"WHERE {' AND '.join(where_clauses)} "
-                "ORDER BY category COLLATE NOCASE ASC"
+                "ORDER BY LOWER(category) ASC, category ASC"
             )
             rows = connection.execute(query, parameters).fetchall()
         return [row["category"] for row in rows]
@@ -863,7 +1070,7 @@ class OffersRepository:
             params.append(store)
         if clauses:
             query += f" WHERE {' AND '.join(clauses)}"
-        query += " ORDER BY priority ASC, store COLLATE NOCASE ASC"
+        query += " ORDER BY priority ASC, LOWER(store) ASC, store ASC"
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [self._to_source_state(row) for row in rows]
@@ -1077,12 +1284,12 @@ class OffersRepository:
     def get_data_mode(self) -> str:
         with self._connect() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT
                     COUNT(*) AS total_count,
                     SUM(CASE WHEN is_demo = 1 THEN 1 ELSE 0 END) AS demo_count,
-                    SUM(CASE WHEN is_demo = 0 AND is_active = 1 AND (flyer_valid_until IS NULL OR DATE(flyer_valid_until) >= DATE('now')) THEN 1 ELSE 0 END) AS active_live_count,
-                    SUM(CASE WHEN is_demo = 1 AND is_active = 1 AND (flyer_valid_until IS NULL OR DATE(flyer_valid_until) >= DATE('now')) THEN 1 ELSE 0 END) AS active_demo_count
+                    SUM(CASE WHEN is_demo = 0 AND {self._active_offers_sql().strip()} THEN 1 ELSE 0 END) AS active_live_count,
+                    SUM(CASE WHEN is_demo = 1 AND {self._active_offers_sql().strip()} THEN 1 ELSE 0 END) AS active_demo_count
                 FROM offers
                 """
             ).fetchone()
@@ -1104,7 +1311,7 @@ class OffersRepository:
         return "mixed"
 
     @staticmethod
-    def _to_source_state(row: sqlite3.Row) -> SourceStateRecord:
+    def _to_source_state(row: Any) -> SourceStateRecord:
         return SourceStateRecord(
             source_key=row["source_key"],
             store=row["store"],
@@ -1188,11 +1395,23 @@ def _parse_json_dict(value: str | None) -> dict[str, str]:
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
-    return datetime.fromisoformat(value) if value else None
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    return datetime.fromisoformat(str(value))
 
 
 def _parse_date(value: str | None) -> date | None:
-    return date.fromisoformat(value) if value else None
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
@@ -1205,3 +1424,25 @@ def _serialize_date(value: date | None) -> str | None:
 
 def _default_next_check(reference: datetime) -> datetime:
     return reference + timedelta(hours=12)
+
+
+def _mask_database_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    if not parsed.netloc:
+        return value
+    username = parsed.username or ""
+    password = parsed.password or ""
+    host = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port else ""
+
+    auth = ""
+    if username:
+        auth = username
+        if password:
+            auth += ":***"
+        auth += "@"
+
+    netloc = f"{auth}{host}{port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     host: str = "0.0.0.0"
     port: int = 8000
+    database_url: str | None = None
     database_path: Path = DATA_DIR / "offers.db"
     upload_dir: Path = UPLOADS_DIR
     poppler_path: Path | None = None
@@ -60,6 +61,16 @@ class Settings(BaseSettings):
         if not resolved.is_absolute():
             resolved = PROJECT_ROOT / resolved
         return resolved.resolve(strict=False)
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value: str | None) -> str | None:
+        if value in (None, ""):
+            return None
+        normalized = str(value).strip()
+        if normalized.startswith("postgres://"):
+            return "postgresql://" + normalized[len("postgres://") :]
+        return normalized
 
     @property
     def cors_origin_list(self) -> list[str]:
