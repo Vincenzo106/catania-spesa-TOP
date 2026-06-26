@@ -261,21 +261,51 @@ class OffersRepository:
     def has_offers(self) -> bool:
         return self.count_offers() > 0
 
-    def count_offers(self, *, active_only: bool = False) -> int:
+    def count_offers(self, *, active_only: bool = False, public_only: bool = False) -> int:
         query = "SELECT COUNT(*) AS count FROM offers"
-        if active_only:
-            query += f" WHERE {ACTIVE_OFFERS_SQL}"
         with self._connect() as connection:
+            where_clauses: list[str] = []
+            if active_only:
+                where_clauses.extend(self._public_offer_filters(connection) if public_only else [ACTIVE_OFFERS_SQL])
+            elif public_only and self._has_active_live_offers(connection):
+                where_clauses.append("is_demo = 0")
+
+            if where_clauses:
+                query += f" WHERE {' AND '.join(where_clauses)}"
             row = connection.execute(query).fetchone()
         return int(row["count"])
 
-    def count_offers_for_store(self, store: str, *, active_only: bool = False) -> int:
+    def count_offers_for_store(self, store: str, *, active_only: bool = False, public_only: bool = False) -> int:
         query = "SELECT COUNT(*) AS count FROM offers WHERE store = ?"
-        if active_only:
-            query += f" AND {ACTIVE_OFFERS_SQL}"
         with self._connect() as connection:
+            where_clauses: list[str] = []
+            if active_only:
+                where_clauses.extend(self._public_offer_filters(connection) if public_only else [ACTIVE_OFFERS_SQL])
+            elif public_only and self._has_active_live_offers(connection):
+                where_clauses.append("is_demo = 0")
+
+            if where_clauses:
+                query += f" AND {' AND '.join(where_clauses)}"
             row = connection.execute(query, (store,)).fetchone()
         return int(row["count"])
+
+    @staticmethod
+    def _has_active_live_offers(connection: sqlite3.Connection) -> bool:
+        row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM offers
+            WHERE {ACTIVE_OFFERS_SQL}
+              AND is_demo = 0
+            """
+        ).fetchone()
+        return bool(int(row["count"] or 0))
+
+    def _public_offer_filters(self, connection: sqlite3.Connection) -> list[str]:
+        filters = [ACTIVE_OFFERS_SQL]
+        if self._has_active_live_offers(connection):
+            filters.append("is_demo = 0")
+        return filters
 
     def get_offer_debug_summary(self, *, store: str | None = None, sample_limit: int = 5) -> dict:
         scoped_where = ""
@@ -647,11 +677,12 @@ class OffersRepository:
 
     def list_stores(self) -> list[str]:
         with self._connect() as connection:
+            where_clauses = self._public_offer_filters(connection)
             rows = connection.execute(
                 f"""
                 SELECT DISTINCT store
                 FROM offers
-                WHERE {ACTIVE_OFFERS_SQL}
+                WHERE {' AND '.join(where_clauses)}
                 ORDER BY store COLLATE NOCASE ASC
                 """
             ).fetchall()
@@ -670,13 +701,17 @@ class OffersRepository:
         return [row["store"] for row in rows]
 
     def list_categories(self, store: str | None = None) -> list[str]:
-        query = f"SELECT DISTINCT category FROM offers WHERE {ACTIVE_OFFERS_SQL}"
         parameters: list[str] = []
-        if store:
-            query += " AND store = ?"
-            parameters.append(store)
-        query += " ORDER BY category COLLATE NOCASE ASC"
         with self._connect() as connection:
+            where_clauses = self._public_offer_filters(connection)
+            if store:
+                where_clauses.append("store = ?")
+                parameters.append(store)
+            query = (
+                "SELECT DISTINCT category FROM offers "
+                f"WHERE {' AND '.join(where_clauses)} "
+                "ORDER BY category COLLATE NOCASE ASC"
+            )
             rows = connection.execute(query, parameters).fetchall()
         return [row["category"] for row in rows]
 
@@ -689,33 +724,31 @@ class OffersRepository:
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[OfferRecord], int]:
-        where_clauses = [ACTIVE_OFFERS_SQL]
         parameters: list[str | int] = []
-
-        if store:
-            where_clauses.append("store = ?")
-            parameters.append(store)
-        if category:
-            where_clauses.append("category = ?")
-            parameters.append(category)
-        if search:
-            where_clauses.append(
-                "(product_name LIKE ? OR COALESCE(brand, '') LIKE ? OR COALESCE(store_location, '') LIKE ?)"
-            )
-            like_value = f"%{search}%"
-            parameters.extend([like_value, like_value, like_value])
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}"
-        count_query = f"SELECT COUNT(*) AS count FROM offers {where_sql}"
-        select_query = f"""
-            SELECT *
-            FROM offers
-            {where_sql}
-            ORDER BY COALESCE(discount_percentage, 0) DESC, discounted_price ASC, product_name ASC
-            LIMIT ? OFFSET ?
-        """
-
         with self._connect() as connection:
+            where_clauses = self._public_offer_filters(connection)
+            if store:
+                where_clauses.append("store = ?")
+                parameters.append(store)
+            if category:
+                where_clauses.append("category = ?")
+                parameters.append(category)
+            if search:
+                where_clauses.append(
+                    "(product_name LIKE ? OR COALESCE(brand, '') LIKE ? OR COALESCE(store_location, '') LIKE ?)"
+                )
+                like_value = f"%{search}%"
+                parameters.extend([like_value, like_value, like_value])
+
+            where_sql = f"WHERE {' AND '.join(where_clauses)}"
+            count_query = f"SELECT COUNT(*) AS count FROM offers {where_sql}"
+            select_query = f"""
+                SELECT *
+                FROM offers
+                {where_sql}
+                ORDER BY COALESCE(discount_percentage, 0) DESC, discounted_price ASC, product_name ASC
+                LIMIT ? OFFSET ?
+            """
             total_row = connection.execute(count_query, parameters).fetchone()
             rows = connection.execute(select_query, [*parameters, limit, offset]).fetchall()
 
@@ -728,26 +761,25 @@ class OffersRepository:
         category: str | None = None,
         limit: int = 12,
     ) -> list[OfferRecord]:
-        where_clauses = [ACTIVE_OFFERS_SQL, "discount_percentage IS NOT NULL"]
         parameters: list[str | int] = []
-
-        if store:
-            where_clauses.append("store = ?")
-            parameters.append(store)
-        if category:
-            where_clauses.append("category = ?")
-            parameters.append(category)
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}"
-        query = f"""
-            SELECT *
-            FROM offers
-            {where_sql}
-            ORDER BY discount_percentage DESC, discounted_price ASC, product_name ASC
-            LIMIT ?
-        """
-
         with self._connect() as connection:
+            where_clauses = self._public_offer_filters(connection)
+            where_clauses.append("discount_percentage IS NOT NULL")
+            if store:
+                where_clauses.append("store = ?")
+                parameters.append(store)
+            if category:
+                where_clauses.append("category = ?")
+                parameters.append(category)
+
+            where_sql = f"WHERE {' AND '.join(where_clauses)}"
+            query = f"""
+                SELECT *
+                FROM offers
+                {where_sql}
+                ORDER BY discount_percentage DESC, discounted_price ASC, product_name ASC
+                LIMIT ?
+            """
             rows = connection.execute(query, [*parameters, limit]).fetchall()
         return [self._to_record(row) for row in rows]
 
@@ -912,8 +944,8 @@ class OffersRepository:
             connection.commit()
 
     def get_update_metadata(self) -> MetadataResponse:
-        live_offers_count = self.count_offers()
-        live_active_offers_count = self.count_offers(active_only=True)
+        live_offers_count = self.count_offers(public_only=True)
+        live_active_offers_count = self.count_offers(active_only=True, public_only=True)
         live_stores = self.list_stores()
         live_supported_stores = self.list_supported_stores()
         live_data_mode = self.get_data_mode()
@@ -968,8 +1000,8 @@ class OffersRepository:
             last_successful_update=last_successful_update,
             last_attempted_update=last_attempted_update,
             last_check=last_check or last_attempted_update or updated_at,
-            offers_count=self.count_offers(),
-            active_offers_count=self.count_offers(active_only=True),
+            offers_count=self.count_offers(public_only=True),
+            active_offers_count=self.count_offers(active_only=True, public_only=True),
             stores=self.list_stores(),
             stores_supported=self.list_supported_stores(),
             stores_updated=stores_updated or [],
@@ -1048,15 +1080,23 @@ class OffersRepository:
                 """
                 SELECT
                     COUNT(*) AS total_count,
-                    SUM(CASE WHEN is_demo = 1 THEN 1 ELSE 0 END) AS demo_count
+                    SUM(CASE WHEN is_demo = 1 THEN 1 ELSE 0 END) AS demo_count,
+                    SUM(CASE WHEN is_demo = 0 AND is_active = 1 AND (flyer_valid_until IS NULL OR DATE(flyer_valid_until) >= DATE('now')) THEN 1 ELSE 0 END) AS active_live_count,
+                    SUM(CASE WHEN is_demo = 1 AND is_active = 1 AND (flyer_valid_until IS NULL OR DATE(flyer_valid_until) >= DATE('now')) THEN 1 ELSE 0 END) AS active_demo_count
                 FROM offers
                 """
             ).fetchone()
 
         total_count = int(row["total_count"] or 0)
         demo_count = int(row["demo_count"] or 0)
+        active_live_count = int(row["active_live_count"] or 0)
+        active_demo_count = int(row["active_demo_count"] or 0)
         if total_count == 0:
             return "empty"
+        if active_live_count > 0:
+            return "live"
+        if active_demo_count > 0:
+            return "demo"
         if demo_count == total_count:
             return "demo"
         if demo_count == 0:
