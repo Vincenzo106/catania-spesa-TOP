@@ -160,6 +160,67 @@ Se usi OCR OpenAI in produzione:
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 
+## Deploy stabile su Render
+
+Stato attuale del progetto:
+
+- il backend usa SQLite;
+- senza persistenza esterna, il filesystem locale di Render puo' essere ricreato a ogni deploy o restart;
+- se il database riparte vuoto e `SEED_DEMO_DATA=true`, il backend torna al seed demo.
+
+### Soluzione consigliata adesso
+
+La soluzione piu' stabile e meno invasiva e':
+
+1. collegare un Render Persistent Disk al servizio backend;
+2. salvare SQLite e upload dentro il disco persistente;
+3. disattivare il seed demo in produzione.
+
+Configurazione consigliata su Render:
+
+- mount path del disco persistente: `/var/data`
+- variabili ambiente:
+  - `DATABASE_PATH=/var/data/offers.db`
+  - `UPLOAD_DIR=/var/data/uploads`
+  - `SEED_DEMO_DATA=false`
+  - `ENVIRONMENT=production`
+  - `ADMIN_UPDATE_TOKEN=...`
+  - `VISION_PROVIDER=openai`
+  - `OPENAI_API_KEY=...`
+
+Con questa configurazione:
+
+- il file SQLite sopravvive ai deploy;
+- le offerte live non tornano al seed demo;
+- `/offers` e `/metadata` restano coerenti dopo ogni nuova release.
+
+### Fallback se non usi ancora il Persistent Disk
+
+Se il piano Render o la configurazione corrente non usano un disco persistente, il backend riparte da zero a ogni deploy. In quel caso:
+
+- imposta comunque `SEED_DEMO_DATA=false` se preferisci evitare il ritorno al catalogo demo;
+- subito dopo il deploy richiama uno di questi endpoint admin:
+  - `POST /admin/update-store/Eurospin`
+  - `POST /admin/update-offers`
+
+Esempio rapido da Windows:
+
+```powershell
+curl.exe -X POST "https://catania-spesa-top.onrender.com/admin/update-store/Eurospin" `
+  -H "Authorization: Bearer IL_TUO_ADMIN_UPDATE_TOKEN"
+```
+
+### Opzione PostgreSQL
+
+La migrazione a PostgreSQL e' una buona opzione futura se vuoi:
+
+- persistenza pienamente gestita;
+- migliore affidabilita' in ambienti multi-instance;
+- query concorrenti piu' robuste;
+- backup e manutenzione piu' semplici.
+
+Pero' al momento il progetto non usa ancora `DATABASE_URL` e non e' stato migrato a PostgreSQL. Per il tuo stato attuale, il Persistent Disk su Render e' la strada migliore per stabilizzare subito il backend senza un refactor piu' ampio.
+
 ## Avvio locale backend
 
 ```powershell
