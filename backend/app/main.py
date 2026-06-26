@@ -43,7 +43,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.database_path.parent.mkdir(parents=True, exist_ok=True)
         resolved_settings.upload_dir.mkdir(parents=True, exist_ok=True)
 
-        repository = OffersRepository(resolved_settings.database_path)
+        repository = OffersRepository(
+            resolved_settings.database_path,
+            database_url=resolved_settings.database_url,
+        )
         if resolved_settings.seed_demo_data:
             repository.seed_demo_offers(resolved_settings.demo_data_path)
 

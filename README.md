@@ -132,6 +132,7 @@ Esempio completo in `backend/.env.example`:
 ```env
 APP_NAME="Catania Spesa Top API"
 ENVIRONMENT="development"
+DATABASE_URL=""
 DATABASE_PATH="backend/data/offers.db"
 UPLOAD_DIR="backend/uploads"
 POPPLER_PATH=""
@@ -150,6 +151,11 @@ PDF_RENDER_DPI="180"
 REQUEST_TIMEOUT_SECONDS="90"
 ```
 
+Scelta del database:
+
+- se `DATABASE_URL` e' valorizzato, il backend usa PostgreSQL;
+- se `DATABASE_URL` e' vuoto o assente, il backend usa SQLite su `DATABASE_PATH`.
+
 Su Render devi impostare almeno:
 
 - `ADMIN_UPDATE_TOKEN`
@@ -164,24 +170,23 @@ Se usi OCR OpenAI in produzione:
 
 Stato attuale del progetto:
 
-- il backend usa SQLite;
-- senza persistenza esterna, il filesystem locale di Render puo' essere ricreato a ogni deploy o restart;
+- il backend supporta SQLite locale e PostgreSQL esterno tramite `DATABASE_URL`;
+- su Render free, senza persistenza esterna, SQLite locale puo' essere ricreato a ogni deploy o restart;
 - se il database riparte vuoto e `SEED_DEMO_DATA=true`, il backend torna al seed demo.
 
 ### Soluzione consigliata adesso
 
-La soluzione piu' stabile e meno invasiva e':
+Per mantenere Render gratis, la soluzione consigliata e':
 
-1. collegare un Render Persistent Disk al servizio backend;
-2. salvare SQLite e upload dentro il disco persistente;
-3. disattivare il seed demo in produzione.
+1. creare un database PostgreSQL gratuito esterno, per esempio su Neon Postgres Free o Supabase Postgres;
+2. impostare `DATABASE_URL` nel servizio Render;
+3. lasciare SQLite solo come fallback locale di sviluppo;
+4. disattivare il seed demo in produzione.
 
 Configurazione consigliata su Render:
 
-- mount path del disco persistente: `/var/data`
 - variabili ambiente:
-  - `DATABASE_PATH=/var/data/offers.db`
-  - `UPLOAD_DIR=/var/data/uploads`
+  - `DATABASE_URL=postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require`
   - `SEED_DEMO_DATA=false`
   - `ENVIRONMENT=production`
   - `ADMIN_UPDATE_TOKEN=...`
@@ -190,13 +195,13 @@ Configurazione consigliata su Render:
 
 Con questa configurazione:
 
-- il file SQLite sopravvive ai deploy;
+- il database non si resetta a ogni deploy;
 - le offerte live non tornano al seed demo;
 - `/offers` e `/metadata` restano coerenti dopo ogni nuova release.
 
-### Fallback se non usi ancora il Persistent Disk
+### Fallback se non usi ancora PostgreSQL esterno
 
-Se il piano Render o la configurazione corrente non usano un disco persistente, il backend riparte da zero a ogni deploy. In quel caso:
+Se `DATABASE_URL` non e' configurato, il backend usa SQLite locale. Su Render free questo significa che il database puo' ripartire da zero a ogni deploy. In quel caso:
 
 - imposta comunque `SEED_DEMO_DATA=false` se preferisci evitare il ritorno al catalogo demo;
 - subito dopo il deploy richiama uno di questi endpoint admin:
@@ -212,14 +217,23 @@ curl.exe -X POST "https://catania-spesa-top.onrender.com/admin/update-store/Euro
 
 ### Opzione PostgreSQL
 
-La migrazione a PostgreSQL e' una buona opzione futura se vuoi:
+PostgreSQL e' gia' supportato dal backend attuale tramite `DATABASE_URL`. E' la scelta migliore se vuoi:
 
 - persistenza pienamente gestita;
 - migliore affidabilita' in ambienti multi-instance;
 - query concorrenti piu' robuste;
 - backup e manutenzione piu' semplici.
 
-Pero' al momento il progetto non usa ancora `DATABASE_URL` e non e' stato migrato a PostgreSQL. Per il tuo stato attuale, il Persistent Disk su Render e' la strada migliore per stabilizzare subito il backend senza un refactor piu' ampio.
+Esempi compatibili:
+
+- Neon Postgres Free
+- Supabase Postgres
+
+Nota pratica:
+
+- l'app mobile non richiede una nuova APK per questa modifica;
+- gli endpoint restano invariati;
+- cambia solo il backend storage.
 
 ## Avvio locale backend
 
