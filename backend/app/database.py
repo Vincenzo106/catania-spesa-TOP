@@ -115,7 +115,7 @@ REQUIRED_METADATA_COLUMNS = {
 
 ACTIVE_OFFERS_SQL = """
 is_active = 1
-AND (flyer_valid_until IS NULL OR flyer_valid_until >= DATE('now'))
+AND (flyer_valid_until IS NULL OR DATE(flyer_valid_until) >= DATE('now'))
 """
 
 
@@ -276,6 +276,139 @@ class OffersRepository:
         with self._connect() as connection:
             row = connection.execute(query, (store,)).fetchone()
         return int(row["count"])
+
+    def get_offer_debug_summary(self, *, store: str | None = None, sample_limit: int = 5) -> dict:
+        scoped_where = ""
+        scoped_params: list[str | int] = []
+        if store:
+            scoped_where = "WHERE store = ?"
+            scoped_params.append(store)
+
+        active_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} {ACTIVE_OFFERS_SQL}"
+        inactive_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} is_active = 0"
+        demo_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} is_demo = 1"
+        live_where = f"{scoped_where} {'AND' if scoped_where else 'WHERE'} is_demo = 0"
+        expired_where = (
+            f"{scoped_where} {'AND' if scoped_where else 'WHERE'} "
+            "is_active = 1 AND flyer_valid_until IS NOT NULL AND DATE(flyer_valid_until) < DATE('now')"
+        )
+        null_validity_where = (
+            f"{scoped_where} {'AND' if scoped_where else 'WHERE'} "
+            "is_active = 1 AND flyer_valid_until IS NULL"
+        )
+
+        with self._connect() as connection:
+            database_list = [
+                {"seq": row["seq"], "name": row["name"], "file": row["file"]}
+                for row in connection.execute("PRAGMA database_list").fetchall()
+            ]
+            total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM offers {scoped_where}",
+                    scoped_params,
+                ).fetchone()["count"]
+            )
+            active_total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM offers {active_where}",
+                    scoped_params,
+                ).fetchone()["count"]
+            )
+            inactive_total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM offers {inactive_where}",
+                    scoped_params,
+                ).fetchone()["count"]
+            )
+            demo_total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM offers {demo_where}",
+                    scoped_params,
+                ).fetchone()["count"]
+            )
+            live_total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM offers {live_where}",
+                    scoped_params,
+                ).fetchone()["count"]
+            )
+            expired_active_total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM offers {expired_where}",
+                    scoped_params,
+                ).fetchone()["count"]
+            )
+            active_null_validity_total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM offers {null_validity_where}",
+                    scoped_params,
+                ).fetchone()["count"]
+            )
+            bounds_row = connection.execute(
+                f"""
+                SELECT
+                    MIN(valid_from) AS min_valid_from,
+                    MAX(valid_from) AS max_valid_from,
+                    MIN(flyer_valid_until) AS min_flyer_valid_until,
+                    MAX(flyer_valid_until) AS max_flyer_valid_until,
+                    MIN(updated_at) AS min_updated_at,
+                    MAX(updated_at) AS max_updated_at
+                FROM offers
+                {scoped_where}
+                """,
+                scoped_params,
+            ).fetchone()
+            sample_rows = [
+                dict(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT
+                        id,
+                        store,
+                        product_name,
+                        discounted_price,
+                        valid_from,
+                        flyer_valid_until,
+                        is_active,
+                        is_demo,
+                        updated_at,
+                        flyer_url
+                    FROM offers
+                    {scoped_where}
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    [*scoped_params, sample_limit],
+                ).fetchall()
+            ]
+
+        db_path = self.db_path.resolve(strict=False)
+        return {
+            "database_path": str(db_path),
+            "database_exists": db_path.exists(),
+            "database_size_bytes": db_path.stat().st_size if db_path.exists() else 0,
+            "sqlite_database_list": database_list,
+            "store_scope": store,
+            "counts": {
+                "total": total,
+                "active_public_filter": active_total,
+                "inactive": inactive_total,
+                "demo": demo_total,
+                "live": live_total,
+                "expired_active": expired_active_total,
+                "active_null_validity": active_null_validity_total,
+            },
+            "date_bounds": {
+                "min_valid_from": bounds_row["min_valid_from"] if bounds_row else None,
+                "max_valid_from": bounds_row["max_valid_from"] if bounds_row else None,
+                "min_flyer_valid_until": bounds_row["min_flyer_valid_until"] if bounds_row else None,
+                "max_flyer_valid_until": bounds_row["max_flyer_valid_until"] if bounds_row else None,
+                "min_updated_at": bounds_row["min_updated_at"] if bounds_row else None,
+                "max_updated_at": bounds_row["max_updated_at"] if bounds_row else None,
+            },
+            "sample_rows": sample_rows,
+            "active_filter_sql": "is_active = 1 AND (flyer_valid_until IS NULL OR DATE(flyer_valid_until) >= DATE('now'))",
+        }
 
     def seed_demo_offers(self, demo_file: Path) -> int:
         if self.has_offers():
@@ -912,12 +1045,11 @@ class OffersRepository:
     def get_data_mode(self) -> str:
         with self._connect() as connection:
             row = connection.execute(
-                f"""
+                """
                 SELECT
                     COUNT(*) AS total_count,
                     SUM(CASE WHEN is_demo = 1 THEN 1 ELSE 0 END) AS demo_count
                 FROM offers
-                WHERE {ACTIVE_OFFERS_SQL}
                 """
             ).fetchone()
 

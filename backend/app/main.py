@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from datetime import datetime
 import os
 from pathlib import Path
 import re
+import socket
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
@@ -70,6 +72,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.metadata_manager = metadata_manager
         app.state.vision_extractor = vision_extractor
         app.state.update_runner = update_runner
+        app.state.instance_id = uuid4().hex
+        app.state.started_at = datetime.utcnow().replace(microsecond=0)
         yield
 
     app = FastAPI(
@@ -177,6 +181,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Nessuna fonte configurata per {store_name}.")
         update_runner: UpdateRunner = request.app.state.update_runner
         return update_runner.run_store_update(store_name)
+
+    @app.get("/admin/debug/offers")
+    def debug_offers(
+        request: Request,
+        authorization: str | None = Header(default=None),
+        store: str | None = Query(default=None),
+        sample_limit: int = Query(default=5, ge=1, le=25),
+    ) -> dict:
+        _authorize_admin(request, authorization)
+        repository: OffersRepository = request.app.state.repository
+        metadata_manager: UpdateMetadataManager = request.app.state.metadata_manager
+        metadata = metadata_manager.build_public_metadata()
+        debug_summary = repository.get_offer_debug_summary(store=store or None, sample_limit=sample_limit)
+        return {
+            "instance_id": request.app.state.instance_id,
+            "pid": os.getpid(),
+            "hostname": socket.gethostname(),
+            "started_at": request.app.state.started_at,
+            "store": store,
+            "metadata": metadata.model_dump(),
+            "repository_debug": debug_summary,
+        }
 
     @app.post("/offers/ingest", response_model=IngestResponse)
     async def ingest_flyer(
